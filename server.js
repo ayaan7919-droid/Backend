@@ -29,8 +29,22 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || 'demo';
-const META_API_TOKEN = process.env.META_API_TOKEN;
-const META_API_ACCOUNT_ID = process.env.META_API_ACCOUNT_ID || '112919690';
+const TELEGRAM_BOT_TOKEN = '8875518570:AAEls21Mj_JeZujm97pwL6l0qDimPBVX62s';
+const TELEGRAM_CHAT_ID = '8719496087';
+
+async function sendTelegramAlert(message) {
+    try {
+        const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
+        await axios.post(url, {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            parse_mode: 'Markdown'
+        });
+        console.log('Telegram signal alert sent successfully');
+    } catch (error) {
+        console.error('Failed to send Telegram alert:', error.response?.data || error.message);
+    }
+}
 
 async function fetchTwelveDataPrice(symbol) {
     try {
@@ -47,7 +61,7 @@ async function fetchTwelveDataPrice(symbol) {
     return 100.00;
 }
 
-// Live SMC Signals Endpoint
+// Live SMC Signals Endpoint & Automatic Telegram Notification
 app.get('/api/live-signals', async (req, res) => {
     try {
         const btcRes = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
@@ -66,7 +80,7 @@ app.get('/api/live-signals', async (req, res) => {
                 tp: `$${(liveBtc * 1.025).toLocaleString('en-US', {minimumFractionDigits: 2})}`,
                 sl: `$${(liveBtc * 0.988).toLocaleString('en-US', {minimumFractionDigits: 2})}`,
                 confidence: '98.9%',
-                status: 'TWELVE DATA & BINANCE REAL-TIME TELEMETRY ACTIVE'
+                status: 'REAL-TIME TELEMETRY ACTIVE'
             },
             {
                 pair: 'ETH/USD',
@@ -75,62 +89,37 @@ app.get('/api/live-signals', async (req, res) => {
                 tp: `$${(liveEth * 1.03).toLocaleString('en-US', {minimumFractionDigits: 2})}`,
                 sl: `$${(liveEth * 0.985).toLocaleString('en-US', {minimumFractionDigits: 2})}`,
                 confidence: '97.6%',
-                status: 'FAIR VALUE GAP (FVG) MITIGATION COMPLETE'
+                status: 'FVG MITIGATION COMPLETE'
             },
             {
                 pair: 'XAU/USD (Gold)',
                 type: 'BUY',
-                entry: `$${liveGold.toFixed(2)} [SETTLED]`,
+                entry: `$${liveGold.toFixed(2)}`,
                 tp: `$${(liveGold * 1.015).toFixed(2)}`,
                 sl: `$${(liveGold * 0.992).toFixed(2)}`,
                 confidence: '99.1%',
-                status: 'TWELVE DATA INSTITUTIONAL FEED'
+                status: 'INSTITUTIONAL FEED'
             }
         ];
+
+        // Format and push alert to Telegram
+        let telegramMsg = `🚨 *NEW SMC TRADING SIGNAL* 🚨\n\n`;
+        realSignals.forEach(sig => {
+            telegramMsg += `🔹 *Pair:* ${sig.pair}\n`;
+            telegramMsg += `📈 *Action:* ${sig.type}\n`;
+            telegramMsg += `📍 *Entry:* ${sig.entry}\n`;
+            telegramMsg += `🎯 *Take Profit:* ${sig.tp}\n`;
+            telegramMsg += `🛑 *Stop Loss:* ${sig.sl}\n`;
+            telegramMsg += `⭐ *Confidence:* ${sig.confidence}\n\n`;
+        });
+        telegramMsg += `⚡ *MT5 Account Target:* 112919690`;
+
+        // Send alert asynchronously
+        sendTelegramAlert(telegramMsg);
 
         res.json({ success: true, signals: realSignals, timestamp: new Date().toISOString() });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error computing live institutional SMC signals', error: error.message });
-    }
-});
-
-// Safe Trade Execution Endpoint (Using MetaApi REST Webhook)
-app.post('/api/execute-trade', async (req, res) => {
-    const { symbol, action, volume } = req.body;
-    
-    if (!META_API_TOKEN) {
-        return res.status(400).json({ success: false, message: 'MetaApi Token is missing.' });
-    }
-
-    try {
-        const response = await axios.post(
-            `https://client-api-v1.agiliumtrade.ag/users/current/accounts/${META_API_ACCOUNT_ID}/trade`,
-            {
-                actionType: action === 'SELL' ? 'ORDER_TYPE_SELL' : 'ORDER_TYPE_BUY',
-                symbol: symbol || 'BTCUSD',
-                volume: volume || 0.01,
-                type: 'ORDER_TYPE_MARKET'
-            },
-            {
-                headers: {
-                    'auth-token': META_API_TOKEN,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-
-        res.json({ 
-            success: true, 
-            message: `Trade executed successfully on MT5 Account ${META_API_ACCOUNT_ID}`,
-            result: response.data 
-        });
-    } catch (error) {
-        console.error('MetaApi Execution Error:', error.response?.data || error.message);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Failed to execute trade via MetaApi REST bridge', 
-            error: error.response?.data || error.message 
-        });
     }
 });
 
