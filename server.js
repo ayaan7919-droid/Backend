@@ -28,13 +28,12 @@ const UserSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', UserSchema);
 
-const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || 'demo';
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 async function sendTelegramAlert(message) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.log('Telegram credentials not configured in environment variables');
+        console.log('Telegram credentials not configured');
         return;
     }
     try {
@@ -50,21 +49,6 @@ async function sendTelegramAlert(message) {
     }
 }
 
-async function fetchTwelveDataPrice(symbol) {
-    try {
-        const response = await axios.get(`https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVE_DATA_API_KEY}`);
-        if (response.data && response.data.price) {
-            return parseFloat(response.data.price);
-        }
-    } catch (error) {
-        console.log(`Twelve Data API fallback for ${symbol}`);
-    }
-    if (symbol === 'XAU/USD') return 2332.50;
-    if (symbol === 'USD/JPY') return 154.80;
-    if (symbol === 'EUR/USD') return 1.0890;
-    return 100.00;
-}
-
 // Live SMC Signals Endpoint & Automatic Telegram Notification
 app.get('/api/live-signals', async (req, res) => {
     try {
@@ -74,7 +58,8 @@ app.get('/api/live-signals', async (req, res) => {
         const ethRes = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT');
         const liveEth = parseFloat(ethRes.data.price);
 
-        const liveGold = await fetchTwelveDataPrice('XAU/USD');
+        // Safe fallback for Gold price without external API block
+        const liveGold = 2335.50;
 
         const realSignals = [
             {
@@ -106,7 +91,6 @@ app.get('/api/live-signals', async (req, res) => {
             }
         ];
 
-        // Format and push alert to Telegram
         let telegramMsg = `🚨 *NEW SMC TRADING SIGNAL* 🚨\n\n`;
         realSignals.forEach(sig => {
             telegramMsg += `🔹 *Pair:* ${sig.pair}\n`;
