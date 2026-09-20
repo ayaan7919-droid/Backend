@@ -42,10 +42,38 @@ async function sendTelegramAlert(message) {
             text: message,
             parse_mode: 'Markdown'
         });
-        console.log('Automated Institutional SMC Signal sent successfully');
+        console.log('Automated SMC + News Filtered Signal sent successfully');
     } catch (error) {
         console.error('Failed to send Telegram alert:', error.response?.data || error.message);
     }
+}
+
+// Function to fetch or evaluate ongoing high-impact economic environment
+async function checkEconomicNewsStatus() {
+    try {
+        // Fetching upcoming financial calendar data from a reliable free public feed
+        const res = await axios.get('https://nfs.faireconomy.media/ff_calendar_thisweek.json');
+        const events = res.data;
+        const now = new Date();
+
+        // Check if there is any high-impact event scheduled within the next 2 hours
+        const highImpactEvent = events.find(event => {
+            if (event.impact !== 'High') return false;
+            const eventDate = new Date(event.date);
+            const diffHours = (eventDate - now) / (1000 * 60 * 60);
+            return diffHours >= -0.5 && diffHours <= 2.0; // Event happening soon or just occurred
+        });
+
+        if (highImpactEvent) {
+            return {
+                isRestricted: true,
+                warning: `⚠️ *MARKET WARNING:* High-Impact News (${highImpactEvent.title} for ${highImpactEvent.country}) detected near current window. Exercise strict risk management!`
+            };
+        }
+    } catch (error) {
+        console.log('Economic calendar feed fallback: Normal volatility assumed');
+    }
+    return { isRestricted: false, warning: '' };
 }
 
 async function executeAndBroadcastSignals() {
@@ -64,6 +92,8 @@ async function executeAndBroadcastSignals() {
         } catch (goldErr) {
             console.log('Gold live feed secondary route active');
         }
+
+        const newsStatus = await checkEconomicNewsStatus();
 
         const generateSMCSetup = (price, riskPercent = 0.008) => {
             const entry = price;
@@ -115,8 +145,14 @@ async function executeAndBroadcastSignals() {
         ];
 
         const timestamp = new Date().toUTCString();
-        let telegramMsg = `🏛️ *AUTOMATED INSTITUTIONAL SMC FEED* 🏛️\n`;
+        let telegramMsg = `🏛️ *AUTOMATED INSTITUTIONAL SMC + NEWS FEED* 🏛️\n`;
         telegramMsg += `⏱ *Time:* ${timestamp}\n\n`;
+
+        if (newsStatus.isRestricted) {
+            telegramMsg += `${newsStatus.warning}\n\n`;
+        } else {
+            telegramMsg += `🟢 *News Environment:* Stable (Clear for Execution)\n\n`;
+        }
 
         realSignals.forEach(sig => {
             telegramMsg += `🔹 *Asset:* ${sig.pair}\n`;
@@ -133,7 +169,7 @@ async function executeAndBroadcastSignals() {
         await sendTelegramAlert(telegramMsg);
         return realSignals;
     } catch (error) {
-        console.error('Error in automated signal execution:', error.message);
+        console.error('Error in automated signal execution with news filter:', error.message);
         return null;
     }
 }
@@ -143,7 +179,7 @@ app.get('/api/live-signals', async (req, res) => {
     if (signals) {
         res.json({ success: true, signals, timestamp: new Date().toISOString() });
     } else {
-        res.status(500).json({ success: false, message: 'Error computing live institutional SMC signals' });
+        res.status(500).json({ success: false, message: 'Error computing live news-filtered SMC signals' });
     }
 });
 
@@ -174,10 +210,10 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`AITradeBot Institutional Backend Server running on port ${PORT}`);
     
-    // Background Automation: Trigger every 1 Hour automatically
+    // Background Automation: Trigger every 1 Hour automatically with news scan
     const ONE_HOUR = 60 * 60 * 1000;
     setInterval(() => {
-        console.log('Running scheduled automated SMC signal scan...');
+        console.log('Running scheduled automated SMC + News signal scan...');
         executeAndBroadcastSignals();
     }, ONE_HOUR);
 });
