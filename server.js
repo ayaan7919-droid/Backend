@@ -42,15 +42,14 @@ async function sendTelegramAlert(message) {
             text: message,
             parse_mode: 'Markdown'
         });
-        console.log('Institutional SMC Signal Alert sent successfully');
+        console.log('Automated Institutional SMC Signal sent successfully');
     } catch (error) {
         console.error('Failed to send Telegram alert:', error.response?.data || error.message);
     }
 }
 
-app.get('/api/live-signals', async (req, res) => {
+async function executeAndBroadcastSignals() {
     try {
-        // Fetching live data via CoinGecko Public API
         const marketRes = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd');
         
         let liveBtc = marketRes.data.bitcoin ? marketRes.data.bitcoin.usd : 68500;
@@ -66,12 +65,11 @@ app.get('/api/live-signals', async (req, res) => {
             console.log('Gold live feed secondary route active');
         }
 
-        // Advanced Institutional SMC Calculation with 1:3 Risk-to-Reward Ratio
         const generateSMCSetup = (price, riskPercent = 0.008) => {
             const entry = price;
-            const sl = entry * (1 - riskPercent); // Tight institutional stop-loss
+            const sl = entry * (1 - riskPercent);
             const risk = entry - sl;
-            const tp = entry + (risk * 3.0); // Strict 1:3 Risk-to-Reward Target
+            const tp = entry + (risk * 3.0);
             return {
                 entry: `$${entry.toLocaleString('en-US', {minimumFractionDigits: 2})}`,
                 tp: `$${tp.toLocaleString('en-US', {minimumFractionDigits: 2})}`,
@@ -117,7 +115,7 @@ app.get('/api/live-signals', async (req, res) => {
         ];
 
         const timestamp = new Date().toUTCString();
-        let telegramMsg = `🏛️ *INSTITUTIONAL SMC TRADING FEED* 🏛️\n`;
+        let telegramMsg = `🏛️ *AUTOMATED INSTITUTIONAL SMC FEED* 🏛️\n`;
         telegramMsg += `⏱ *Time:* ${timestamp}\n\n`;
 
         realSignals.forEach(sig => {
@@ -133,10 +131,19 @@ app.get('/api/live-signals', async (req, res) => {
         telegramMsg += `⚡ *Linked MT5 Account:* 112919690`;
 
         await sendTelegramAlert(telegramMsg);
-
-        res.json({ success: true, signals: realSignals, timestamp: new Date().toISOString() });
+        return realSignals;
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Error executing institutional strategy calculation', error: error.message });
+        console.error('Error in automated signal execution:', error.message);
+        return null;
+    }
+}
+
+app.get('/api/live-signals', async (req, res) => {
+    const signals = await executeAndBroadcastSignals();
+    if (signals) {
+        res.json({ success: true, signals, timestamp: new Date().toISOString() });
+    } else {
+        res.status(500).json({ success: false, message: 'Error computing live institutional SMC signals' });
     }
 });
 
@@ -166,4 +173,11 @@ app.post('/api/verify-payment', async (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`AITradeBot Institutional Backend Server running on port ${PORT}`);
+    
+    // Background Automation: Trigger every 1 Hour automatically
+    const ONE_HOUR = 60 * 60 * 1000;
+    setInterval(() => {
+        console.log('Running scheduled automated SMC signal scan...');
+        executeAndBroadcastSignals();
+    }, ONE_HOUR);
 });
