@@ -2,11 +2,13 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const axios = require('axios');
+const MetaApi = require('metaapi.cloud-sdk').default;
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
+// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/aitradebot', {
     useNewUrlParser: true,
     useUnifiedTopology: true
@@ -29,6 +31,10 @@ const User = mongoose.model('User', UserSchema);
 
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || 'demo';
 
+// MetaApi Configuration (Pre-configured for your account)
+const META_API_TOKEN = process.env.META_API_TOKEN;
+const META_API_ACCOUNT_ID = process.env.META_API_ACCOUNT_ID || '112919690';
+
 async function fetchTwelveDataPrice(symbol) {
     try {
         const response = await axios.get(`https://api.twelvedata.com/price?symbol=${symbol}&apikey=${TWELVE_DATA_API_KEY}`);
@@ -44,6 +50,7 @@ async function fetchTwelveDataPrice(symbol) {
     return 100.00;
 }
 
+// Live SMC Signals Endpoint
 app.get('/api/live-signals', async (req, res) => {
     try {
         const btcRes = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
@@ -83,15 +90,6 @@ app.get('/api/live-signals', async (req, res) => {
                 sl: `$${(liveGold * 0.992).toFixed(2)}`,
                 confidence: '99.1%',
                 status: 'TWELVE DATA INSTITUTIONAL FEED'
-            },
-            {
-                pair: 'EUR/USD',
-                type: 'BUY',
-                entry: `${liveEurUsd.toFixed(4)} [SETTLED]`,
-                tp: `${(liveEurUsd * 1.004).toFixed(4)}`,
-                sl: `${(liveEurUsd * 0.998).toFixed(4)}`,
-                confidence: '95.8%',
-                status: 'ORDER BLOCK MITIGATION VALIDATED'
             }
         ];
 
@@ -101,6 +99,49 @@ app.get('/api/live-signals', async (req, res) => {
     }
 });
 
+// MetaApi Automated Trade Execution Endpoint
+app.post('/api/execute-trade', async (req, res) => {
+    const { symbol, action, volume } = req.body;
+    
+    if (!META_API_TOKEN) {
+        return res.status(400).json({ 
+            success: false, 
+            message: 'MetaApi Token is missing in environment variables.' 
+        });
+    }
+
+    try {
+        const api = new MetaApi(META_API_TOKEN);
+        const account = await api.metatraderAccountApi.getAccount(META_API_ACCOUNT_ID);
+        
+        const connection = account.getRPCConnection();
+        await connection.connect();
+        await connection.waitSynchronized();
+
+        const orderResult = await connection.createMarketOrder(
+            symbol || 'BTCUSD',
+            action || 'BUY',
+            volume || 0.01,
+            undefined,
+            undefined
+        );
+
+        res.json({ 
+            success: true, 
+            message: `Trade executed successfully via MetaApi on MT5 Account ${META_API_ACCOUNT_ID}`,
+            orderResult 
+        });
+    } catch (error) {
+        console.error('MetaApi Execution Error:', error);
+        res.status(500).json({ 
+            success: false, 
+            message: 'Failed to execute trade on MetaTrader 5 via MetaApi bridge', 
+            error: error.message 
+        });
+    }
+});
+
+// Payment Verification Endpoint
 app.post('/api/verify-payment', async (req, res) => {
     const { walletAddress, txHash, planName, deliveryTarget } = req.body;
     if (!walletAddress || !txHash) {
