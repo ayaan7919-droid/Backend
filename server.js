@@ -7,7 +7,6 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-// MongoDB Connection
 mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/aitradebot', {
     useNewUrlParser: true,
     useUnifiedTopology: true
@@ -49,7 +48,6 @@ async function sendTelegramAlert(message) {
     }
 }
 
-// Live SMC Signals Endpoint & Automatic Telegram Notification
 app.get('/api/live-signals', async (req, res) => {
     try {
         const btcRes = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT');
@@ -58,7 +56,6 @@ app.get('/api/live-signals', async (req, res) => {
         const ethRes = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT');
         const liveEth = parseFloat(ethRes.data.price);
 
-        // Safe fallback for Gold price without external API block
         const liveGold = 2335.50;
 
         const realSignals = [
@@ -110,7 +107,6 @@ app.get('/api/live-signals', async (req, res) => {
     }
 });
 
-// Payment Verification Endpoint
 app.post('/api/verify-payment', async (req, res) => {
     const { walletAddress, txHash, planName, deliveryTarget } = req.body;
     if (!walletAddress || !txHash) {
