@@ -2,7 +2,6 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const axios = require('axios');
-const MetaApi = require('metaapi.cloud-sdk').default;
 
 const app = express();
 app.use(express.json());
@@ -30,8 +29,6 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || 'demo';
-
-// MetaApi Configuration (Pre-configured for your account)
 const META_API_TOKEN = process.env.META_API_TOKEN;
 const META_API_ACCOUNT_ID = process.env.META_API_ACCOUNT_ID || '112919690';
 
@@ -60,8 +57,6 @@ app.get('/api/live-signals', async (req, res) => {
         const liveEth = parseFloat(ethRes.data.price);
 
         const liveGold = await fetchTwelveDataPrice('XAU/USD');
-        const liveUsdJpy = await fetchTwelveDataPrice('USD/JPY');
-        const liveEurUsd = await fetchTwelveDataPrice('EUR/USD');
 
         const realSignals = [
             {
@@ -99,44 +94,42 @@ app.get('/api/live-signals', async (req, res) => {
     }
 });
 
-// MetaApi Automated Trade Execution Endpoint
+// Safe Trade Execution Endpoint (Using MetaApi REST Webhook)
 app.post('/api/execute-trade', async (req, res) => {
     const { symbol, action, volume } = req.body;
     
     if (!META_API_TOKEN) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'MetaApi Token is missing in environment variables.' 
-        });
+        return res.status(400).json({ success: false, message: 'MetaApi Token is missing.' });
     }
 
     try {
-        const api = new MetaApi(META_API_TOKEN);
-        const account = await api.metatraderAccountApi.getAccount(META_API_ACCOUNT_ID);
-        
-        const connection = account.getRPCConnection();
-        await connection.connect();
-        await connection.waitSynchronized();
-
-        const orderResult = await connection.createMarketOrder(
-            symbol || 'BTCUSD',
-            action || 'BUY',
-            volume || 0.01,
-            undefined,
-            undefined
+        const response = await axios.post(
+            `https://client-api-v1.agiliumtrade.ag/users/current/accounts/${META_API_ACCOUNT_ID}/trade`,
+            {
+                actionType: action === 'SELL' ? 'ORDER_TYPE_SELL' : 'ORDER_TYPE_BUY',
+                symbol: symbol || 'BTCUSD',
+                volume: volume || 0.01,
+                type: 'ORDER_TYPE_MARKET'
+            },
+            {
+                headers: {
+                    'auth-token': META_API_TOKEN,
+                    'Content-Type': 'application/json'
+                }
+            }
         );
 
         res.json({ 
             success: true, 
-            message: `Trade executed successfully via MetaApi on MT5 Account ${META_API_ACCOUNT_ID}`,
-            orderResult 
+            message: `Trade executed successfully on MT5 Account ${META_API_ACCOUNT_ID}`,
+            result: response.data 
         });
     } catch (error) {
-        console.error('MetaApi Execution Error:', error);
+        console.error('MetaApi Execution Error:', error.response?.data || error.message);
         res.status(500).json({ 
             success: false, 
-            message: 'Failed to execute trade on MetaTrader 5 via MetaApi bridge', 
-            error: error.message 
+            message: 'Failed to execute trade via MetaApi REST bridge', 
+            error: error.response?.data || error.message 
         });
     }
 });
@@ -161,7 +154,7 @@ app.post('/api/verify-payment', async (req, res) => {
         }
         res.json({ success: true, message: 'On-chain transaction verified successfully!' });
     } catch (error) {
-        res.status(500).json({ success: false, message: 'Database verification error during on-chain settlement' });
+        res.status(500).json({ success: false, message: 'Database verification error' });
     }
 });
 
