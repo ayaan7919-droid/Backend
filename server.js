@@ -29,10 +29,14 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || 'demo';
-const TELEGRAM_BOT_TOKEN = '8875518570:AAEls21Mj_JeZujm97pwL6l0qDimPBVX62s';
-const TELEGRAM_CHAT_ID = '8719496087';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 async function sendTelegramAlert(message) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.log('Telegram credentials not configured in environment variables');
+        return;
+    }
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
         await axios.post(url, {
@@ -114,7 +118,6 @@ app.get('/api/live-signals', async (req, res) => {
         });
         telegramMsg += `⚡ *MT5 Account Target:* 112919690`;
 
-        // Send alert asynchronously
         sendTelegramAlert(telegramMsg);
 
         res.json({ success: true, signals: realSignals, timestamp: new Date().toISOString() });
