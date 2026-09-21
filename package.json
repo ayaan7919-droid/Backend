@@ -1,19 +1,14 @@
 {
-  "name": "aitradebot",
+  "name": "altradebot",
   "version": "1.0.0",
-  "description": "Automated Institutional SMC Trading Bot with Telegram & MT5 Execution",
+  "description": "SMC Signal Broadcaster",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "axios": "^1.7.9",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "metaapi.cloud-sdk": "*",
-    "mongoose": "^8.3.1"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+    "axios": "^1.6.0",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3"
   }
 }
