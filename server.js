@@ -51,11 +51,8 @@ async function getLiveGoldPrice() {
     throw new Error("Unable to fetch live Gold price.");
 }
 
-// 1. Premium Feature: Institutional News & High-Impact Sentiment Filter Mock
 async function checkNewsSentimentFilter() {
-    // Premium bots check economic calendars (CPI, NFP, FOMC) to avoid high volatility traps
-    // Yahan hum simulated check ya live API check place kar sakte hain
-    const isHighImpactNewsTime = false; // Agar true hoga toh bot safe mode par chala jayega
+    const isHighImpactNewsTime = false; 
     return isHighImpactNewsTime;
 }
 
@@ -64,7 +61,6 @@ let signalCounter = 1;
 
 async function scanMarketForSMCSetup() {
     try {
-        // News filter check
         const newsBlock = await checkNewsSentimentFilter();
         if (newsBlock) {
             console.log("High-Impact News detected! Bot paused signal generation for safety.");
@@ -75,22 +71,19 @@ async function scanMarketForSMCSetup() {
 
         const liveGoldPrice = await getLiveGoldPrice();
         
-        // 2. Premium Feature: Advanced Order Flow & Liquidity Sweep Logic Validation
         const setupType = "Institutional Liquidity Sweep + Order Block Mitigation + BOS";
         const action = Math.random() > 0.5 ? "BUY (LONG) 🟢" : "SELL (SHORT) 🔴";
         const confidence = (Math.random() * (99.9 - 99.5) + 99.5).toFixed(2);
         const entry = liveGoldPrice;
         
-        // 3. Premium Feature: Dynamic Risk Management & Lot Size Calculation
-        const accountBalance = 10000; // Example account size
-        const riskPercentage = 1.0;   // 1% risk per trade
+        const accountBalance = 10000; 
+        const riskPercentage = 1.0;   
         const riskBuffer = 6.00;  
-        const rewardTarget = 21.00; // Strict 1:3.5 Risk Reward
+        const rewardTarget = 21.00; 
 
         const sl = action.includes("BUY") ? entry - riskBuffer : entry + riskBuffer;
         const tp = action.includes("BUY") ? entry + rewardTarget : entry - rewardTarget;
         
-        // Dynamic lot calculation based on risk
         const calculatedLotSize = ((accountBalance * (riskPercentage / 100)) / (riskBuffer * 100)).toFixed(2);
 
         const signalId = `INSTI-SIG-${signalCounter++}`;
@@ -144,7 +137,7 @@ async function monitorSignalsAndReport() {
                     resultMessage = `🛑 *STOP LOSS HIT (SL)* 🛑\nSignal ID: ${signal.id}\nAsset: GOLD (XAU/USD)\nDirection: BUY\nResult: Stop Loss triggered. Risk protected securely.`;
                     activeSignals.splice(i, 1);
                 }
-            } else { // SELL Signal
+            } else { 
                 if (liveGoldPrice <= signal.tp) {
                     resultMessage = `🎯 *VIP TARGET HIT! (TP)* 🎯\nSignal ID: ${signal.id}\nAsset: GOLD (XAU/USD)\nDirection: SELL\nResult: Institutional Target achieved successfully! 🚀`;
                     activeSignals.splice(i, 1);
@@ -168,7 +161,8 @@ app.get('/api/test-signal', async (req, res) => {
     res.json({ success: true, message: "Institutional premium test signal triggered." });
 });
 
-setInterval(scanMarketForSMCSetup, 5 * 60 * 1000);
+// Yahan scanner ko 1 minute kar diya hai
+setInterval(scanMarketForSMCSetup, 1 * 60 * 1000);
 setInterval(monitorSignalsAndReport, 60 * 1000);
 
 const PORT = process.env.PORT || 3000;
