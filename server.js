@@ -66,7 +66,6 @@ async function executeMT5Trade(symbol, action, lotSize, sl, tp) {
         await connection.connect();
         await connection.waitSynchronized();
 
-        // Format symbol for standard brokers (e.g. BTC/USD -> BTCUSD, XAU/USD -> XAUUSD)
         let formattedSymbol = symbol.replace('/USD', 'USD').replace(' (Gold)', '');
         if (formattedSymbol === 'XAUUSD' || formattedSymbol === 'GOLD') {
             formattedSymbol = 'XAUUSD'; 
@@ -272,6 +271,17 @@ app.get('/api/live-signals', async (req, res) => {
         res.json({ success: true, signals: realSignals, isPaidUser, timestamp: new Date().toISOString() });
     } catch (error) {
         res.status(500).json({ success: false, message: 'Error fetching signals' });
+    }
+});
+
+// Instant Test Endpoint for MT5 & Telegram Execution
+app.get('/api/test-trade', async (req, res) => {
+    try {
+        console.log('Manual test execution triggered via browser...');
+        const result = await executeAndBroadcastSignals();
+        res.json({ success: true, message: 'Test trade executed and broadcasted!', signals: result });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
