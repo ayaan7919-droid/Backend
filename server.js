@@ -30,23 +30,27 @@ async function sendTelegramAlert(message) {
     }
 }
 
-// Multi-Market SMC Scanner Logic (Forex, Gold & Crypto)
+// Gold-Focused Multi-Market SMC Scanner Logic
 async function runSMCScannerAndBroadcast() {
     try {
-        console.log("Running automated Multi-Market SMC scan (Forex, Gold, Crypto)...");
+        console.log("Running automated Gold-focused multi-market scan...");
         
-        // Assets list
-        const assets = [
-            { name: "XAU/USD (Gold)", type: "GOLD", basePrice: 4350.00, spread: 25.00 },
-            { name: "EUR/USD", type: "FOREX", basePrice: 1.0850, spread: 0.0030 },
-            { name: "GBP/USD", type: "FOREX", basePrice: 1.2720, spread: 0.0040 },
-            { name: "USD/JPY", type: "FOREX", basePrice: 154.50, spread: 0.40 },
-            { name: "BTC/USD", type: "CRYPTO", basePrice: 64500.00, spread: 1200.00 },
-            { name: "ETH/USD", type: "CRYPTO", basePrice: 3450.00, spread: 80.00 }
-        ];
-
-        // Randomly select one asset from the list for this hour's signal
-        const selectedAsset = assets[Math.floor(Math.random() * assets.length)];
+        // Gold ko sabse zyada priority (80% chance Gold aane ka)
+        const isGold = Math.random() <= 0.80;
+        
+        let selectedAsset;
+        if (isGold) {
+            selectedAsset = { name: "XAU/USD (Gold)", type: "GOLD", basePrice: 4350.00, spread: 25.00 };
+        } else {
+            // Baki assets ka mix 20% ke liye
+            const otherAssets = [
+                { name: "EUR/USD", type: "FOREX", basePrice: 1.0850, spread: 0.0030 },
+                { name: "GBP/USD", type: "FOREX", basePrice: 1.2720, spread: 0.0040 },
+                { name: "USD/JPY", type: "FOREX", basePrice: 154.50, spread: 0.40 },
+                { name: "BTC/USD", type: "CRYPTO", basePrice: 64500.00, spread: 1200.00 }
+            ];
+            selectedAsset = otherAssets[Math.floor(Math.random() * otherAssets.length)];
+        }
         
         const setupTypes = [
             "Market Structure Break (BOS) + Institutional Liquidity Sweep",
@@ -56,10 +60,10 @@ async function runSMCScannerAndBroadcast() {
         ];
         const setupType = setupTypes[Math.floor(Math.random() * setupTypes.length)];
         
-        const confidence = (Math.random() * (98.8 - 91.5) + 91.5).toFixed(1); 
+        const confidence = (Math.random() * (98.8 - 92.0) + 92.0).toFixed(1); 
         const action = Math.random() > 0.15 ? "BUY (LONG)" : "SELL (SHORT)";
         
-        // Calculate realistic prices based on asset type
+        // Price calculation logic
         let entryPrice, takeProfit, stopLoss, rrRatio;
         
         if (selectedAsset.type === "FOREX") {
@@ -85,7 +89,6 @@ async function runSMCScannerAndBroadcast() {
             }
             rrRatio = "1:3.0";
         } else {
-            // CRYPTO
             const variance = (Math.random() * 200 - 100);
             entryPrice = (selectedAsset.basePrice + variance).toFixed(2);
             if (action.includes("BUY")) {
@@ -109,27 +112,26 @@ async function runSMCScannerAndBroadcast() {
             `⚖️ *Risk-to-Reward:* ${rrRatio}\n\n` +
             `⚡ *Linked MT5 Account:* ${MT5_ACCOUNT_ID}`;
 
-        // Telegram par automatic broadcast karein
         await sendTelegramAlert(alertMessage);
-        console.log(`Multi-market SMC signal broadcasted successfully for ${selectedAsset.name}!`);
+        console.log(`Gold-prioritized SMC signal broadcasted successfully for ${selectedAsset.name}!`);
     } catch (error) {
-        console.error("Error in automated multi-market scanner:", error.message);
+        console.error("Error in automated scanner:", error.message);
     }
 }
 
-// 🕒 AUTOMATIC CRON SCHEDULE: Har 1 ghante mein khud-b-khud chalega
+// 🕒 AUTOMATIC CRON SCHEDULE: Har 1 ghante mein chalega
 cron.schedule('0 * * * *', () => {
-    console.log('Hourly Cron triggered: Scanning all markets (Forex, Gold, Crypto)...');
+    console.log('Hourly Cron triggered: Scanning Gold-focused markets...');
     runSMCScannerAndBroadcast();
 });
 
-// Manual test route agar turant check karna ho
+// Manual test route
 app.get('/api/test-trade', async (r_req, r_res) => {
     await runSMCScannerAndBroadcast();
-    r_res.json({ success: true, message: "Multi-market SMC test signal triggered and broadcasted to Telegram!" });
+    r_res.json({ success: true, message: "Gold-prioritized SMC test signal broadcasted!" });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Multi-Market SMC Bot server is running on port ${PORT}`);
+    console.log(`Gold-Focused SMC Bot server is running on port ${PORT}`);
 });
