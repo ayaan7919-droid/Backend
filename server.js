@@ -57,7 +57,7 @@ async function getAssetPrice(assetName) {
     } else if (assetName.includes("EUR/USD")) {
         return 1.0850; // Standard baseline / live feed simulation for forex
     } else if (assetName.includes("GBP/USD")) {
-        *return 1.2750;
+        return 1.2750; // Error fixed here
     } else if (assetName.includes("BTC/USD")) {
         return 65000.00;
     }
