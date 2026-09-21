@@ -12,12 +12,11 @@ const MT5_ACCOUNT_ID = process.env.MT5_ACCOUNT_ID || "112919690";
 
 async function sendTelegramAlert(message) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.error("ERROR: Telegram Bot Token or Chat ID is missing in Environment Variables!");
+        console.error("ERROR: Telegram Bot Token or Chat ID is missing!");
         return false;
     }
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-        // Removed parse_mode to prevent markdown crash errors
         const response = await axios.post(url, { 
             chat_id: TELEGRAM_CHAT_ID, 
             text: message 
@@ -32,22 +31,20 @@ async function sendTelegramAlert(message) {
 
 async function checkMarketStructureAndSignal() {
     try {
-        console.log("Fetching Binance 15m candles for structure check...");
-        const btcRes = await axios.get('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=5');
-        const candles = btcRes.data;
+        console.log("Fetching live market data from CoinGecko (Bypassing US restrictions)...");
+        // Using CoinGecko free API to avoid region blocks (Status 451)
+        const res = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true');
         
-        if (!candles || candles.length < 5) {
-            console.log("Could not fetch candles");
+        if (!res.data || !res.data.bitcoin) {
+            console.log("Could not fetch market data");
             return false;
         }
 
-        const lastCandleClose = parseFloat(candles[candles.length - 1][4]);
-        const prevCandleOpen = parseFloat(candles[candles.length - 2][1]);
-        const priceDifference = lastCandleClose - prevCandleOpen;
+        const livePrice = res.data.bitcoin.usd;
+        const priceChange = res.data.bitcoin.usd_24h_change;
 
         let assetName = "BTC/USD";
-        let livePrice = lastCandleClose;
-        let action = priceDifference >= 0 ? "BUY (LONG)" : "SELL (SHORT)";
+        let action = priceChange >= 0 ? "BUY (LONG)" : "SELL (SHORT)";
         let setupType = "Market Structure Break (BOS) + Institutional Order Block (OB)";
         let confidence = (Math.random() * (99.2 - 97.0) + 97.0).toFixed(1);
 
