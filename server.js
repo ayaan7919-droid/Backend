@@ -22,7 +22,7 @@ async function sendTelegramAlert(message) {
     }
 }
 
-// 🌐 FETCH REAL LIVE MARKET PRICES TO PREVENT ANY MISMATCH
+// 🌐 FETCH REAL LIVE MARKET PRICES
 async function getRealMarketPrice(symbol) {
     try {
         if (symbol === "BTC/USD") {
@@ -31,7 +31,7 @@ async function getRealMarketPrice(symbol) {
         } else if (symbol === "GBP/USD") {
             const res = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=GBPUSDT').catch(() => null);
             if (res && res.data) return parseFloat(res.data.price);
-            return 1.3382; // Matches real live market chart rates
+            return 1.3382;
         } else if (symbol === "XAU/USD (Gold)") {
             return 2332.50 + (Math.random() * 5 - 2.5);
         } else if (symbol === "EUR/USD") {
@@ -43,7 +43,7 @@ async function getRealMarketPrice(symbol) {
     return 1.3382;
 }
 
-// ⚡ 100% REAL-TIME SYNCHRONIZED SMC & NEWS ENGINE
+// ⚡ REAL-TIME SYNCHRONIZED SMC ENGINE
 async function runAdvancedMarketEngine() {
     try {
         console.log("Fetching live market prices for accurate signal dispatch...");
@@ -63,26 +63,27 @@ async function runAdvancedMarketEngine() {
 
         if (assetName.includes("Gold") || assetName.includes("BTC")) {
             entry = entry.toFixed(2);
+            // Tight realistic targets for BTC/Gold
             if (action.includes("BUY")) {
-                tp = (parseFloat(entry) + 30.00).toFixed(2);
-                sl = (parseFloat(entry) - 12.00).toFixed(2);
+                tp = (parseFloat(entry) + 150.00).toFixed(2);
+                sl = (parseFloat(entry) - 75.00).toFixed(2);
             } else {
-                tp = (parseFloat(entry) - 30.00).toFixed(2);
-                sl = (parseFloat(entry) + 12.00).toFixed(2);
+                tp = (parseFloat(entry) - 150.00).toFixed(2);
+                sl = (parseFloat(entry) + 75.00).toFixed(2);
             }
-            potentialProfit = "+$450.00 Estimated Return (1:2.5 RR)";
-            potentialLoss = "-$180.00 Max Risk Control";
+            potentialProfit = "+$350.00 Estimated Return (1:2.0 RR)";
+            potentialLoss = "-$175.00 Max Risk Control";
         } else {
             entry = entry.toFixed(4);
             if (action.includes("BUY")) {
-                tp = (parseFloat(entry) + 0.0040).toFixed(4);
-                sl = (parseFloat(entry) - 0.0018).toFixed(4);
+                tp = (parseFloat(entry) + 0.0030).toFixed(4);
+                sl = (parseFloat(entry) - 0.0015).toFixed(4);
             } else {
-                tp = (parseFloat(entry) - 0.0040).toFixed(4);
-                sl = (parseFloat(entry) + 0.0018).toFixed(4);
+                tp = (parseFloat(entry) - 0.0030).toFixed(4);
+                sl = (parseFloat(entry) + 0.0015).toFixed(4);
             }
-            potentialProfit = "+$280.00 Estimated Return (1:2.3 RR)";
-            potentialLoss = "-$120.00 Max Risk Control";
+            potentialProfit = "+$250.00 Estimated Return (1:2.0 RR)";
+            potentialLoss = "-$125.00 Max Risk Control";
         }
 
         const alertMessage = 
