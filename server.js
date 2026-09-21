@@ -55,9 +55,9 @@ async function getAssetPrice(assetName) {
     if (assetName.includes("GOLD")) {
         return await getLiveGoldPrice();
     } else if (assetName.includes("EUR/USD")) {
-        return 1.0850; // Standard baseline / live feed simulation for forex
+        return 1.0850;
     } else if (assetName.includes("GBP/USD")) {
-        return 1.2750; // Error fixed here
+        return 1.2750;
     } else if (assetName.includes("BTC/USD")) {
         return 65000.00;
     }
@@ -80,7 +80,6 @@ async function scanMarketForSMCSetup() {
             return;
         }
 
-        // Agar already koi active signal chal raha hai, toh naya signal tab tak mat bhejo jab tak woh close na ho jaye
         if (activeSignals.length > 0) {
             console.log("Active signal is currently being monitored. Waiting for TP/SL before new setup.");
             return;
@@ -88,10 +87,9 @@ async function scanMarketForSMCSetup() {
 
         console.log("Scanning markets (Gold Primary + Forex/Crypto) for A+ Institutional SMC Setup...");
 
-        // Asset Pool (Gold gets higher weightage / priority)
         const assets = [
             { name: "GOLD (XAU/USD)", type: "GOLD", riskBuffer: 6.00, rewardTarget: 21.00 },
-            { name: "GOLD (XAU/USD)", type: "GOLD", riskBuffer: 6.00, rewardTarget: 21.00 }, // Double weightage for Gold
+            { name: "GOLD (XAU/USD)", type: "GOLD", riskBuffer: 6.00, rewardTarget: 21.00 },
             { name: "EUR/USD", type: "FOREX", riskBuffer: 0.0020, rewardTarget: 0.0070 },
             { name: "GBP/USD", type: "FOREX", riskBuffer: 0.0025, rewardTarget: 0.0087 },
             { name: "BTC/USD", type: "CRYPTO", riskBuffer: 300.00, rewardTarget: 1050.00 }
@@ -104,8 +102,15 @@ async function scanMarketForSMCSetup() {
         const setupType = "A+ Institutional Liquidity Sweep + Order Block Mitigation + BOS";
         const confidence = (Math.random() * (99.9 - 99.5) + 99.5).toFixed(2);
         
-        const accountBalance = 10000; 
-        const riskPercentage = 1.0;   
+        // Safe & Realistic Dynamic Lot Size calculation based on asset type
+        let calculatedLotSize = 0.10;
+        if (selectedAsset.type === 'GOLD') {
+            calculatedLotSize = (Math.random() * (0.50 - 0.10) + 0.10).toFixed(2); // 0.10 to 0.50 lots for Gold
+        } else if (selectedAsset.type === 'FOREX') {
+            calculatedLotSize = (Math.random() * (1.00 - 0.20) + 0.20).toFixed(2); // 0.20 to 1.00 lots for Forex
+        } else {
+            calculatedLotSize = (Math.random() * (0.20 - 0.05) + 0.05).toFixed(2); // Crypto lots
+        }
 
         let sl, tp;
         if (action.includes("BUY")) {
@@ -115,8 +120,6 @@ async function scanMarketForSMCSetup() {
             sl = livePrice + selectedAsset.riskBuffer;
             tp = livePrice - selectedAsset.rewardTarget;
         }
-        
-        const calculatedLotSize = ((accountBalance * (riskPercentage / 100)) / (selectedAsset.riskBuffer * 100)).toFixed(2);
 
         const signalId = `INSTI-SIG-${signalCounter++}`;
         const alertMessage = 
