@@ -11,32 +11,40 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const MT5_ACCOUNT_ID = process.env.MT5_ACCOUNT_ID || "112919690";
 
 async function sendTelegramAlert(message) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.error("ERROR: Telegram Bot Token or Chat ID is missing in Environment Variables!");
+        return false;
+    }
     try {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-        await axios.post(url, { chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'Markdown' });
+        // Removed parse_mode to prevent markdown crash errors
+        const response = await axios.post(url, { 
+            chat_id: TELEGRAM_CHAT_ID, 
+            text: message 
+        });
+        console.log("Telegram alert sent successfully:", response.data);
         return true;
     } catch (error) {
-        console.error("Telegram error:", error.message);
+        console.error("Telegram API Error Response:", error.response?.data || error.message);
         return false;
     }
 }
 
-// 🌐 FETCH REAL LIVE MARKET CANDLES & PRICE ACTION
 async function checkMarketStructureAndSignal() {
     try {
-        // Fetching live data to detect real structure breaks
+        console.log("Fetching Binance 15m candles for structure check...");
         const btcRes = await axios.get('https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=5');
         const candles = btcRes.data;
         
-        if (!candles || candles.length < 5) return;
+        if (!candles || candles.length < 5) {
+            console.log("Could not fetch candles");
+            return false;
+        }
 
-        // Simple SMC Logic: Checking displacement / structure break between recent candles
         const lastCandleClose = parseFloat(candles[candles.length - 1][4]);
         const prevCandleOpen = parseFloat(candles[candles.length - 2][1]);
         const priceDifference = lastCandleClose - prevCandleOpen;
 
-        // Condition for Market Structure Break (BOS)
         let assetName = "BTC/USD";
         let livePrice = lastCandleClose;
         let action = priceDifference >= 0 ? "BUY (LONG)" : "SELL (SHORT)";
@@ -58,35 +66,37 @@ async function checkMarketStructureAndSignal() {
         potentialLoss = "-$175.00 Max Risk Control";
 
         const alertMessage = 
-            `🚨 *TRUE SMC STRUCTURE SIGNAL (BOS)* 🚨\n` +
-            `📊 *Setup:* ${setupType}\n` +
-            `⭐ *Confidence:* ${confidence}%\n\n` +
-            `🔹 *Asset:* ${assetName}\n` +
-            `📈 *Direction:* ${action}\n` +
-            `📍 *Live Chart Entry:* $${entry}\n\n` +
-            `🎯 *Take Profit (TP):* $${tp}\n` +
-            `🛑 *Stop Loss (SL):* $${sl}\n\n` +
-            `💰 *Potential Profit:* ${potentialProfit}\n` +
-            `⚠️ *Market Risks:* Monitor spread during session volatility.\n` +
-            `📉 *Max Risk Control:* ${potentialLoss}\n\n` +
-            `⚡ *Linked MT5 Account:* ${MT5_ACCOUNT_ID}`;
+            `🚨 LIVE INSTITUTIONAL SMC SIGNAL 🚨\n\n` +
+            `📊 Setup: ${setupType}\n` +
+            `⭐ Confidence: ${confidence}%\n\n` +
+            `🔹 Asset: ${assetName}\n` +
+            `📈 Direction: ${action}\n` +
+            `📍 Live Chart Entry: $${entry}\n\n` +
+            `🎯 Take Profit (TP): $${tp}\n` +
+            `🛑 Stop Loss (SL): $${sl}\n\n` +
+            `💰 Potential Profit: ${potentialProfit}\n` +
+            `📉 Max Risk Control: ${potentialLoss}\n\n` +
+            `⚡ Linked MT5 Account: ${MT5_ACCOUNT_ID}`;
 
-        await sendTelegramAlert(alertMessage);
-        console.log(`Authentic BOS signal dispatched for ${assetName} at entry ${entry}`);
+        const sent = await sendTelegramAlert(alertMessage);
+        return sent;
     } catch (error) {
         console.error("Structure Engine Error:", error.message);
+        return false;
     }
 }
 
-// Check market structure every 10 minutes (Only triggers when valid price movement occurs)
 setInterval(() => {
     checkMarketStructureAndSignal();
 }, 10 * 60 * 1000);
 
-// Manual testing endpoint to instantly test the structure check
 app.get('/api/test-signal', async (req, res) => {
-    await checkMarketStructureAndSignal();
-    res.json({ success: true, message: "Market structure checked and signal evaluated." });
+    const result = await checkMarketStructureAndSignal();
+    if (result) {
+        res.json({ success: true, message: "Signal successfully generated and sent to Telegram!" });
+    } else {
+        res.json({ success: false, message: "Checked structure, but Telegram failed to send. Check Railway logs." });
+    }
 });
 
 app.get('/api/live-signals', (req, res) => {
