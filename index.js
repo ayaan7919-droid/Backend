@@ -1,7 +1,8 @@
 // ============================================================
-//  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v3.0 (Absolute Final)
+//  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v3.1 (Railway Optimized)
 //  Features: Security, API Caching, Zero Repainting, Accurate Risk Math, 
-//            Auto SL/TP Tracker, True Fractal Market Structure, Strict MTF
+//            Auto SL/TP Tracker, True Fractal Market Structure, Strict MTF,
+//            Railway Health Check Optimized
 // ============================================================
 
 require("dotenv").config();
@@ -21,7 +22,7 @@ app.use(express.static("public"));
 //  SECURITY CHECK: Fail fast if keys are missing
 // ============================================================
 if (!process.env.TD_KEY || !process.env.TG_TOKEN || !process.env.TG_CHAT) {
-  console.error("❌ FATAL: Missing environment variables. Please set TD_KEY, TG_TOKEN, and TG_CHAT in your .env file.");
+  console.error(" FATAL: Missing environment variables. Please set TD_KEY, TG_TOKEN, and TG_CHAT in your .env file.");
   process.exit(1);
 }
 
@@ -87,7 +88,7 @@ async function saveState() {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     await fsp.writeFile(STATE_FILE, JSON.stringify(botState, null, 2));
   } catch (e) {
-    console.log("⚠️ State save error:", e.message);
+    console.log("️ State save error:", e.message);
   } finally {
     isSavingState = false;
   }
@@ -140,15 +141,10 @@ async function monitorActiveTrade() {
     const statusText = isWin ? 'TARGET HIT (WIN) 🎉' : 'STOP LOSS HIT (LOSS) 🛑';
     
     const msg = 
-      `${emoji} <b>TRADE UPDATE: ${trade.type} CLOSED</b>\n\n` +
-      `🎯 Result: <b>${statusText}</b>\n` +
-      `💰 Entry: <b>${trade.entry}</b>\n` +
-      `🛑 SL: ${trade.sl} | 🎯 TP: ${trade.tp}\n\n` +
-      `⏰ Closed at: ${lastClosed.time}\n` +
-      `📊 <i>Update your trading journal!</i>`;
-
-    await sendTelegramRaw(msg);
-    console.log(`🏁 Trade Closed: ${result} for ${trade.type} @ ${trade.entry}`);
+      `<LaTex>id_1</LaTex>{trade.type} CLOSED</b>\n\n` +
+      `🎯 Result: <b><LaTex>id_2</LaTex>{trade.entry}</b>\n` +
+      `🛑 SL: <LaTex>id_3</LaTex>{trade.tp}\n\n` +
+      `⏰ Closed at: <LaTex>id_4</LaTex>{result} for <LaTex>id_5</LaTex>{trade.entry}`);
 
     // Clear active trade after hit
     botState.activeTrade = null;
@@ -216,41 +212,7 @@ async function fetchMTFData(timeframe) {
       return mtfCache[timeframe].data;
     }
 
-    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(CONFIG.SYMBOL)}&interval=${timeframe}&outputsize=100&apikey=${CONFIG.TWELVE_DATA_KEY}`;
-    const { data } = await axios.get(url, { timeout: 10000 });
-    
-    if (!data.values) return null;
-    
-    const tfCandles = data.values.reverse().map(v => ({
-      time: v.datetime, open: parseFloat(v.open), high: parseFloat(v.high),
-      low: parseFloat(v.low), close: parseFloat(v.close),
-    }));
-    
-    if (tfCandles.length < 50) return null;
-    
-    // 🛡️ ANTI-REPAINTING: Use only CLOSED candles for indicator calculation
-    const closedCandles = tfCandles.slice(0, -1);
-    const closes = closedCandles.map(c => c.close);
-    const lastClosed = tfCandles[tfCandles.length - 2];
-    
-    const e9 = calcEMA(closes, 9);
-    const e21 = calcEMA(closes, 21);
-    const macd = calcMACD(closes);
-    const rsi = calcRSI(closes, 14);
-    
-    let score = 0;
-    if (lastClosed.close > e9 && e9 > e21) score += 3;
-    if (macd.macd > macd.signal) score += 2;
-    if (rsi < 40) score += 2;
-    if (rsi > 60) score -= 2;
-    
-    const signal = score >= 4 ? 'BUY' : score <= -2 ? 'SELL' : 'NEUTRAL';
-    const result = { timeframe, signal, score, rsi: rsi.toFixed(1), price: lastClosed.close.toFixed(2) };
-    
-    mtfCache[timeframe] = { data: result, lastFetch: now };
-    return result;
-  } catch (e) {
-    console.log(`MTF Error (${timeframe}):`, e.message);
+    const url = `https://api.twelvedata.com/time_series?symbol=<LaTex>id_6</LaTex>{timeframe}&outputsize=100&apikey=<LaTex>id_7</LaTex>{timeframe}):`, e.message);
     return mtfCache[timeframe]?.data || null;
   }
 }
@@ -487,146 +449,13 @@ async function analyze() {
     },
     note: sig === "NONE"
       ? (newsPause ? "⏸️ High-Impact News Time (Paused)" : !session.active ? "Session closed" : botState.dayTrades >= CONFIG.MAX_TRADES_DAY ? "Daily trade limit reached" : "No high-confidence setup — waiting")
-      : `Strong confirmed setup (${confidence}% confidence)`,
-  };
-
-  const alertKey = `${sig}-${lastClosed.time}`;
-  if (sig !== "NONE" && alertKey !== botState.lastAlertKey && lastClosed.time !== botState.lastAlertBar) {
-    botState.dayTrades++;
-    botState.lastAlertKey = alertKey;
-    botState.lastAlertBar = lastClosed.time;
-    
-    // 🆕 Save as Active Trade for tracking
-    botState.activeTrade = {
-      type: sig,
-      entry: entry,
-      sl: sl,
-      tp: tp,
-      time: nowISO
-    };
-    
-    await saveState();
-    lastSignal.tradesToday = botState.dayTrades;
-    await sendTelegram(lastSignal);
-    console.log(`🚨 ALERT SENT [${nowISO}] ${sig} | Confidence: ${confidence}% | price ${lastClosed.close}`);
-  } else {
-    console.log(`[${nowISO}] scan: buy ${buy} sell ${sell} | confidence ${confidence}% | no new alert`);
-  }
-}
-
-// ============================================================
-//  DATA FETCHING & TELEGRAM
-// ============================================================
-async function fetchData() {
-  if (isFetching) { console.log("⏳ Fetch skipped (already in progress)..."); return; }
-  isFetching = true;
-  try {
-    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(CONFIG.SYMBOL)}&interval=${CONFIG.INTERVAL}&outputsize=200&apikey=${CONFIG.TWELVE_DATA_KEY}`;
+      : `Strong confirmed setup (<LaTex>id_8</LaTex>{sig}-<LaTex>id_9</LaTex>{nowISO}] <LaTex>id_10</LaTex>{confidence}% | price <LaTex>id_11</LaTex>{nowISO}] scan: buy <LaTex>id_12</LaTex>{sell} | confidence <LaTex>id_13</LaTex>{encodeURIComponent(CONFIG.SYMBOL)}&interval=<LaTex>id_14</LaTex>{CONFIG.TWELVE_DATA_KEY}`;
     const { data } = await axios.get(url, { timeout: 15000 });
 
     if (!data.values) {
       consecutiveErrors++;
-      if (consecutiveErrors >= 5) { await sendTelegramRaw("⚠️ Data fetch failing repeatedly. Check API Key."); consecutiveErrors = 0; }
+      if (consecutiveErrors >= 5) { await sendTelegramRaw("️ Data fetch failing repeatedly. Check API Key."); consecutiveErrors = 0; }
       if (lastSignal) lastSignal.isDataFresh = false;
       return;
     }
-    consecutiveErrors = 0;
-    lastFetchTime = new Date();
-    candles = data.values.reverse().map(v => ({
-      time: v.datetime, open: parseFloat(v.open), high: parseFloat(v.high),
-      low: parseFloat(v.low), close: parseFloat(v.close),
-    }));
-    await analyze();
-  } catch (e) {
-    consecutiveErrors++;
-    if (lastSignal) lastSignal.isDataFresh = false;
-    console.error("Fetch Error:", e.message);
-  } finally {
-    isFetching = false;
-    setTimeout(fetchData, CONFIG.POLL_SECONDS * 1000);
-  }
-}
-
-setInterval(() => {
-  if (lastFetchTime) {
-    const ageMin = (Date.now() - lastFetchTime.getTime()) / 60000;
-    if (ageMin > CONFIG.STALE_THRESHOLD_MIN && lastSignal.isDataFresh) {
-      lastSignal.isDataFresh = false;
-      console.log("⚠️ Data marked stale");
-    }
-  }
-}, 30000);
-
-async function sendTelegramRaw(text) {
-  if (!CONFIG.TELEGRAM_TOKEN || !CONFIG.TELEGRAM_CHAT) return;
-  try {
-    await axios.post(`https://api.telegram.org/bot${CONFIG.TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: CONFIG.TELEGRAM_CHAT, text, parse_mode: "HTML",
-    }, { timeout: 5000 });
-  } catch (e) { console.log("TG error:", e.message); }
-}
-
-async function sendTelegram(sig) {
-  const emoji = sig.signal === "BUY" ? "🟢" : "🔴";
-  const newsWarning = sig.newsPaused ? "\n⚠️ <b>NOTE:</b> Signal near news time!" : "";
-  
-  let mtfText = "";
-  if (sig.mtfConfirmation) {
-    const mtf = sig.mtfConfirmation;
-    mtfText = `\n📊 <b>Multi-Timeframe:</b>\n`;
-    mtf.details.forEach(d => {
-      const icon = d.signal === 'BUY' ? '🟢' : d.signal === 'SELL' ? '🔴' : '⚪';
-      mtfText += `${icon} ${d.timeframe}: ${d.signal} (score: ${d.score})\n`;
-    });
-    mtfText += `✨ MTF Confidence: ${mtf.confidence}%`;
-  }
-
-  // 🛡️ FIXED R:R CALCULATION: Use Math.abs to prevent negative division issues
-  const rr = Math.abs(sig.takeProfit - sig.entry) / Math.abs(sig.entry - sig.stopLoss);
-
-  const msg =
-    `${emoji} <b>GOLD ${sig.signal}</b> ⭐${sig.confidence}%\n\n` +
-    `📌 Entry: <b>${sig.entry}</b>\n` +
-    `🛑 SL: <b>${sig.stopLoss}</b>\n` +
-    `🎯 TP: <b>${sig.takeProfit}</b>\n` +
-    `📦 Lot: <b>${sig.lotSize}</b>\n` +
-    `📈 R:R = <b>1:${rr.toFixed(1)}</b>\n\n` +
-    `🕐 Session: ${sig.session}\n` +
-    `📊 Score → Buy: ${sig.buyScore} | Sell: ${sig.sellScore}\n` +
-    `📈 RSI: ${sig.indicators.rsi} | ADX: ${sig.indicators.adx}\n` +
-    `${mtfText}\n` +
-    `${newsWarning}\n` +
-    `⚠️ <i>Trading involves risk. Manage your own risk.</i>`;
-
-  await sendTelegramRaw(msg);
-}
-
-// ============================================================
-//  ROUTES & SERVER START
-// ============================================================
-app.get("/signal", (req, res) => res.json(lastSignal));
-app.get("/health", (req, res) => res.json({
-  ok: true, time: new Date().toISOString(), candlesLoaded: candles.length,
-  isDataFresh: lastSignal.isDataFresh, state: botState, isFetching: isFetching
-}));
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
-  console.log(`✅ Server running on port ${PORT} — polling every ${CONFIG.POLL_SECONDS}s`);
-  console.log(`📊 Interval: ${CONFIG.INTERVAL} | MTF: ${CONFIG.ENABLE_MTF ? 'ON' : 'OFF'} | Auto-Tracker: ENABLED`);
-  
-  if (process.env.DISABLE_BOOT_MSG !== "true") {
-    await sendTelegramRaw("✅ <b>Gold Signal Server v3.0 (Absolute Final)</b> is LIVE!\n🛡️ True Fractal Structure + 24h Auto-Expiry + Perfect Risk Math Active.");
-  }
-  fetchData();
-});
-
-// ✅ ERROR HANDLING FIX: Force exit so PM2/Railway can cleanly restart the bot
-process.on("unhandledRejection", (err) => { 
-  console.error("❌ Unhandled rejection:", err); 
-  process.exit(1); 
-});
-process.on("uncaughtException", (err) => { 
-  console.error("❌ Uncaught exception:", err); 
-  process.exit(1); 
-});
+    consecutiveErrors = 0
