@@ -44,8 +44,11 @@ const CONFIG = {
   TWELVE_DATA_KEY: process.env.TD_KEY || "demo",
 
   // Telegram (zaroori hai agar alert chahiye)
-  TELEGRAM_TOKEN: process.env.TG_TOKEN || "",
-  TELEGRAM_CHAT: process.env.TG_CHAT || "",
+  // NOTE: agar repo PUBLIC hai to ye hardcoded values sabko dikhengi —
+  // koi bhi tera bot control kar sakta hai. Private repo rakh, ya
+  // Railway ke Variables tab me hi daal aur yahan khali chhod de.
+  TELEGRAM_TOKEN: process.env.TG_TOKEN || "8867660132:AAErPb1wWfg-sici_vUzp8KJsAJNRB33wPA",
+  TELEGRAM_CHAT: process.env.TG_CHAT || "8719496087",
 };
 
 // ============================================================
@@ -351,8 +354,9 @@ app.get("/health", (req, res) => res.json({ ok: true, time: new Date().toISOStri
 //  START — continuous 24/7 loop
 // ============================================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`✅ Server running on port ${PORT} — polling every ${CONFIG.POLL_SECONDS}s`);
+  await sendTelegramRaw("✅ Gold Signal Server is now LIVE and monitoring the market 24/7.");
   fetchData();
   setInterval(fetchData, CONFIG.POLL_SECONDS * 1000);
 });
