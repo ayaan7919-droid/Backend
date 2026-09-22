@@ -41,7 +41,7 @@ const CONFIG = {
   POLL_SECONDS: 60,           // har 60 sec market check (24/7)
 
   // FREE data source: twelvedata.com se free API key le lo
-  TWELVE_DATA_KEY: process.env.TD_KEY || "demo",
+  TWELVE_DATA_KEY: process.env.TD_KEY || "5ba753f104e94af7b7345228d078c43e",
 
   // Telegram (zaroori hai agar alert chahiye)
   // NOTE: agar repo PUBLIC hai to ye hardcoded values sabko dikhengi —
