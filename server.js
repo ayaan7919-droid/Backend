@@ -1,56 +1,78 @@
 // ============================================================
-//  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v1.1 (fixed)
-//  Deploy on: Render.com / Railway / VPS (NOT Netlify for backend)
-//  Static dashboard (public/index.html) can go on Netlify.
+//  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v2.0 (Production Ready)
+//  Deploy on: Railway (with Volume at /app)
 // ============================================================
 
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 app.use(cors());
 app.use(express.static("public"));
 
 // ============================================================
-//  CONFIG
+//  CONFIG (API Keys Unchanged as Requested)
 // ============================================================
 const CONFIG = {
   SYMBOL: "XAU/USD",
-  INTERVAL: "1min",          
-  SPREAD: 0.30,               
-  CONTRACT_SIZE: 100,         
-  ACCOUNT_BALANCE: 1000,      
-  RISK_PERCENT: 1.0,          
+  INTERVAL: "1min",
+  SPREAD: 0.30,
+  CONTRACT_SIZE: 100,
+  ACCOUNT_BALANCE: 1000,
+  RISK_PERCENT: 1.0,
   ATR_SL: 2.0,
   ATR_TP: 5.0,
   MIN_RR: 2.5,
 
-  MIN_CONFIRM: 12,            
-  MAX_OPPOSITE: 3,            
+  MIN_CONFIRM: 12,
+  MAX_OPPOSITE: 3,
 
   MAX_TRADES_DAY: 3,
-  POLL_SECONDS: 300,          // 5 minutes (API limit safe)
+  POLL_SECONDS: 60,
 
   TWELVE_DATA_KEY: process.env.TD_KEY || "5ba753f104e94af7b7345228d078c43e",
-
   TELEGRAM_TOKEN: process.env.TG_TOKEN || "8867660132:AAErPb1wWfg-sici_vUzp8KJsAJNRB33wPA",
   TELEGRAM_CHAT: process.env.TG_CHAT || "8719496087",
 };
 
 // ============================================================
-//  STATE
+//  STATE MANAGEMENT (Persistent via JSON File - Railway Volume)
 // ============================================================
+const STATE_FILE = "/app/bot_state.json";
+let botState = { dayTrades: 0, dayKey: "", lastAlertKey: null, lastAlertBar: null };
+
+function loadState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      botState = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
+      console.log("✅ State loaded from volume:", botState);
+    } else {
+      console.log("ℹ️ No existing state file, starting fresh.");
+    }
+  } catch (e) {
+    console.log("⚠️ State load error, using defaults:", e.message);
+  }
+}
+
+function saveState() {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(botState, null, 2));
+  } catch (e) {
+    console.log("⚠️ State save error:", e.message);
+  }
+}
+
 let lastSignal = { signal: "NONE", time: null, reason: "Booting..." };
 let candles = [];
-let dayTrades = 0;
-let dayKey = "";
-let lastAlertKey = null;      
-let lastAlertBar = null;      
 let consecutiveErrors = 0;
 
+loadState();
+
 // ============================================================
-//  INDICATOR HELPERS
+//  INDICATOR HELPERS (TradingView Accurate - Wilder's Smoothing)
 // ============================================================
 function ema(values, period) {
   const k = 2 / (period + 1);
@@ -58,34 +80,57 @@ function ema(values, period) {
   for (let i = 1; i < values.length; i++) e = values[i] * k + e * (1 - k);
   return e;
 }
+
 function emaSeries(values, period) {
   const k = 2 / (period + 1);
   const out = [values[0]];
-  for (let i = 1; i < values.length; i++)
-    out.push(values[i] * k + out[i - 1] * (1 - k));
+  for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
   return out;
 }
-function rsi(closes, period = 14) {
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
+
+function calculateRSI(closes, period = 14) {
+  if (closes.length < period + 1) return 50;
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[closes.length - period - 1 + i] - closes[closes.length - period - 1 + i - 1];
+    if (diff > 0) avgGain += diff; else avgLoss += Math.abs(diff);
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = closes.length - period + 1; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff; else losses -= diff;
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? Math.abs(diff) : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
   }
-  const rs = losses === 0 ? 100 : gains / losses;
-  return 100 - 100 / (1 + rs);
+  const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 }
-function atr(c, period = 14) {
-  let sum = 0;
-  for (let i = c.length - period; i < c.length; i++) {
+
+function calculateATR(candles, period = 14) {
+  if (candles.length < period + 1) return 0;
+  let atr = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
     const tr = Math.max(
-      c[i].high - c[i].low,
-      Math.abs(c[i].high - c[i - 1].close),
-      Math.abs(c[i].low - c[i - 1].close)
+      candles[i].high - candles[i].low,
+      Math.abs(candles[i].high - candles[i - 1].close),
+      Math.abs(candles[i].low - candles[i - 1].close)
     );
-    sum += tr;
+    atr += tr;
   }
-  return sum / period;
+  atr /= period;
+  for (let i = candles.length - period + 1; i < candles.length; i++) {
+    const tr = Math.max(
+      candles[i].high - candles[i].low,
+      Math.abs(candles[i].high - candles[i - 1].close),
+      Math.abs(candles[i].low - candles[i - 1].close)
+    );
+    atr = (atr * (period - 1) + tr) / period;
+  }
+  return atr;
 }
+
 function macd(closes) {
   const e12 = emaSeries(closes, 12);
   const e26 = emaSeries(closes, 26);
@@ -94,6 +139,7 @@ function macd(closes) {
   const last = macdLine.length - 1;
   return { macd: macdLine[last], signal: signalLine[last] };
 }
+
 function stochK(c, period = 14) {
   const slice = c.slice(-period);
   const hh = Math.max(...slice.map(x => x.high));
@@ -101,6 +147,7 @@ function stochK(c, period = 14) {
   const close = c[c.length - 1].close;
   return hh === ll ? 50 : ((close - ll) / (hh - ll)) * 100;
 }
+
 function dmi(c, period = 14) {
   let plusDM = 0, minusDM = 0, trSum = 0;
   const start = Math.max(1, c.length - period);
@@ -117,9 +164,16 @@ function dmi(c, period = 14) {
   }
   const diPlus = trSum === 0 ? 0 : (plusDM / trSum) * 100;
   const diMinus = trSum === 0 ? 0 : (minusDM / trSum) * 100;
-  const dx = diPlus + diMinus === 0 ? 0 :
-    (Math.abs(diPlus - diMinus) / (diPlus + diMinus)) * 100;
+  const dx = diPlus + diMinus === 0 ? 0 : (Math.abs(diPlus - diMinus) / (diPlus + diMinus)) * 100;
   return { diPlus, diMinus, adx: dx };
+}
+
+// ============================================================
+//  SESSION & NEWS FILTERS
+// ============================================================
+function getNYDayKey() {
+  const nyDate = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  return nyDate.toISOString().slice(0, 10);
 }
 
 function goodSession() {
@@ -134,6 +188,17 @@ function goodSession() {
   };
 }
 
+function isNewsTime() {
+  const now = new Date();
+  const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const isMorningNews = currentMinutes >= 780 && currentMinutes <= 840;
+  const isAfternoonNews = currentMinutes >= 1050 && currentMinutes <= 1110;
+  return isMorningNews || isAfternoonNews;
+}
+
+// ============================================================
+//  CORE ANALYSIS ENGINE
+// ============================================================
 function analyze() {
   if (candles.length < 60) {
     lastSignal = { signal: "NONE", reason: "Collecting data...", time: new Date().toISOString() };
@@ -149,8 +214,8 @@ function analyze() {
   const e9 = ema(closes, 9);
   const e21 = ema(closes, 21);
   const e50 = ema(closes, 50);
-  const r = rsi(closes);
-  const a = atr(candles);
+  const r = calculateRSI(closes, 14);
+  const a = calculateATR(candles, 14);
   const m = macd(closes);
   const s = stochK(candles);
   const d = dmi(candles);
@@ -160,10 +225,9 @@ function analyze() {
 
   const body = Math.abs(last.close - last.open);
   const prevBody = Math.abs(prev.close - prev.open);
-  const bullEngulf = last.close > last.open && prev.close < prev.open &&
-    last.open <= prev.close && last.close >= prev.open && body > prevBody;
-  const bearEngulf = last.close < last.open && prev.close > prev.open &&
-    last.open >= prev.close && last.close <= prev.open && body > prevBody;
+  const bullEngulf = last.close > last.open && prev.close < prev.open && last.open <= prev.close && last.close >= prev.open && body > prevBody;
+  const bearEngulf = last.close < last.open && prev.close > prev.open && last.open >= prev.close && last.close <= prev.open && body > prevBody;
+
   const wickLow = last.close > last.open ? last.open - last.low : last.close - last.low;
   const wickHigh = last.close > last.open ? last.high - last.close : last.high - last.open;
   const bullPin = wickLow > body * 2 && wickHigh < body * 0.5;
@@ -173,6 +237,7 @@ function analyze() {
   const strongBear = last.close < e9 && e9 < e21 && e21 < e50;
 
   const session = goodSession();
+  const newsPause = isNewsTime();
 
   let buy = 0, sell = 0;
   if (strongBull) buy += 3;
@@ -197,16 +262,21 @@ function analyze() {
   if (last.high >= resistance - a && last.close < resistance) sell += 2;
   if (session.overlap) sell += 1;
 
-  const todayKey = new Date().toISOString().slice(0, 10);
-  if (todayKey !== dayKey) { dayKey = todayKey; dayTrades = 0; }
+  const todayKey = getNYDayKey();
+  if (todayKey !== botState.dayKey) {
+    botState.dayKey = todayKey;
+    botState.dayTrades = 0;
+    saveState();
+  }
 
-  const canTrade = session.active && dayTrades < CONFIG.MAX_TRADES_DAY;
+  const canTrade = session.active && !newsPause && botState.dayTrades < CONFIG.MAX_TRADES_DAY;
 
   const slDist = a * CONFIG.ATR_SL;
   const tpDist = Math.max(a * CONFIG.ATR_TP, slDist * CONFIG.MIN_RR);
   const riskMoney = CONFIG.ACCOUNT_BALANCE * (CONFIG.RISK_PERCENT / 100);
+
   let lot = riskMoney / (slDist * CONFIG.CONTRACT_SIZE);
-  lot = Math.max(0.01, Math.round(lot * 100) / 100);
+  lot = Math.max(0.01, Math.min(5.0, Math.round(lot * 100) / 100));
 
   let sig = "NONE", entry = last.close, sl = null, tp = null;
 
@@ -234,7 +304,8 @@ function analyze() {
     buyScore: buy,
     sellScore: sell,
     session: session.name,
-    tradesToday: dayTrades,
+    newsPaused: newsPause,
+    tradesToday: botState.dayTrades,
     indicators: {
       ema9: +e9.toFixed(2), ema21: +e21.toFixed(2), ema50: +e50.toFixed(2),
       rsi: +r.toFixed(1), adx: +d.adx.toFixed(1),
@@ -242,16 +313,18 @@ function analyze() {
       spread: CONFIG.SPREAD,
     },
     note: sig === "NONE"
-      ? (!session.active ? "Session closed" : dayTrades >= CONFIG.MAX_TRADES_DAY ? "Daily trade limit reached" : "No high-confidence setup — waiting")
+      ? (newsPause ? "⏸️ High-Impact News Time (Paused)" : !session.active ? "Session closed" : botState.dayTrades >= CONFIG.MAX_TRADES_DAY ? "Daily trade limit reached" : "No high-confidence setup — waiting")
       : "Strong confirmed setup",
   };
 
   const alertKey = `${sig}-${last.time}`;
-  if (sig !== "NONE" && alertKey !== lastAlertKey && last.time !== lastAlertBar) {
-    dayTrades++;
-    lastSignal.tradesToday = dayTrades;
-    lastAlertKey = alertKey;
-    lastAlertBar = last.time;
+  if (sig !== "NONE" && alertKey !== botState.lastAlertKey && last.time !== botState.lastAlertBar) {
+    botState.dayTrades++;
+    botState.lastAlertKey = alertKey;
+    botState.lastAlertBar = last.time;
+    saveState();
+
+    lastSignal.tradesToday = botState.dayTrades;
     sendTelegram(lastSignal);
     console.log(`🚨 ALERT SENT [${lastSignal.time}] ${sig} | price ${last.close} | buy ${buy} sell ${sell} | ${session.name}`);
   } else {
@@ -259,10 +332,14 @@ function analyze() {
   }
 }
 
+// ============================================================
+//  DATA FETCHING & TELEGRAM
+// ============================================================
 async function fetchData() {
   try {
     const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(CONFIG.SYMBOL)}&interval=${CONFIG.INTERVAL}&outputsize=200&apikey=${CONFIG.TWELVE_DATA_KEY}`;
     const { data } = await axios.get(url, { timeout: 15000 });
+
     if (!data.values) {
       consecutiveErrors++;
       console.log("Data fetch issue:", data.message || data.status);
@@ -272,6 +349,7 @@ async function fetchData() {
       }
       return;
     }
+
     consecutiveErrors = 0;
     candles = data.values.reverse().map(v => ({
       time: v.datetime,
@@ -302,6 +380,8 @@ async function sendTelegramRaw(text) {
 
 async function sendTelegram(sig) {
   const emoji = sig.signal === "BUY" ? "🟢" : "🔴";
+  const newsWarning = sig.newsPaused ? "\n⚠️ <b>NOTE:</b> Signal generated near news time. Verify broker spread!" : "";
+
   const msg =
     `${emoji} <b>GOLD ${sig.signal}</b>\n\n` +
     `💰 Entry: <b>${sig.entry}</b>\n` +
@@ -310,18 +390,29 @@ async function sendTelegram(sig) {
     `📦 Lot: <b>${sig.lotSize}</b>\n` +
     `🕐 Session: ${sig.session}\n` +
     `📊 Score → Buy: ${sig.buyScore} | Sell: ${sig.sellScore}\n` +
-    `📈 RSI: ${sig.indicators.rsi} | ADX: ${sig.indicators.adx}\n\n` +
+    `📈 RSI: ${sig.indicators.rsi} | ADX: ${sig.indicators.adx}\n` +
+    `${newsWarning}` +
     `⚠️ <i>Trading involves risk. No signal is guaranteed. Manage your own risk.</i>`;
+
   await sendTelegramRaw(msg);
 }
 
+// ============================================================
+//  ROUTES & SERVER START
+// ============================================================
 app.get("/signal", (req, res) => res.json(lastSignal));
-app.get("/health", (req, res) => res.json({ ok: true, time: new Date().toISOString(), candlesLoaded: candles.length }));
+app.get("/health", (req, res) => res.json({
+  ok: true,
+  time: new Date().toISOString(),
+  candlesLoaded: candles.length,
+  state: botState
+}));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`✅ Server running on port ${PORT} — polling every ${CONFIG.POLL_SECONDS}s`);
-  await sendTelegramRaw("✅ Gold Signal Server is now LIVE and monitoring the market 24/7.");
+  console.log(`📂 State file: ${STATE_FILE}`);
+  await sendTelegramRaw("✅ Gold Signal Server v2.0 is now LIVE. State persistence & News filters active.");
   fetchData();
   setInterval(fetchData, CONFIG.POLL_SECONDS * 1000);
 });
