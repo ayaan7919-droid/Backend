@@ -1,5 +1,5 @@
 // ============================================================
-//  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v2.4 (Final Bulletproof)
+//  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v2.6 (Final Private Repo Optimized)
 //  Works on: Railway / Local / Any Node.js Host
 // ============================================================
 
@@ -8,6 +8,7 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const fs = require("fs");
+const fsp = fs.promises; // ✅ Async file operations to prevent server freeze
 const path = require("path");
 const TI = require("technicalindicators"); // TradingView-Accurate Indicators
 
@@ -16,12 +17,12 @@ app.use(cors());
 app.use(express.static("public"));
 
 // ============================================================
-//  CONFIG (Keys preserved exactly as requested)
+//  CONFIG (Keys restored with fallback for Private GitHub)
 // ============================================================
 const CONFIG = {
   SYMBOL: "XAU/USD",
-  INTERVAL: process.env.INTERVAL || "5min", // 5min recommended for reliability
-  SPREAD: 0.40, // Realistic for Gold standard accounts
+  INTERVAL: process.env.INTERVAL || "5min", // 5min recommended for reliability & API quota saving
+  SPREAD: 0.30,
   CONTRACT_SIZE: 100, // ⚠️ Verify with your specific broker
   ACCOUNT_BALANCE: 1000,
   RISK_PERCENT: 1.0,
@@ -32,10 +33,11 @@ const CONFIG = {
   MIN_CONFIRM: 12,
   MAX_OPPOSITE: 3,
   MAX_TRADES_DAY: 3,
-  POLL_SECONDS: 120, // 120s (720 req/day) stays safe on Twelve Data Free Tier
-  STALE_THRESHOLD_MIN: 5,
+  
+  POLL_SECONDS: 300, // 300s (5 min) perfectly matches 5min interval (288 req/day)
+  STALE_THRESHOLD_MIN: 10, // Adjusted for 5min interval
 
-  // ⚠️ KEPT AS REQUESTED. (Strongly advise moving these to .env file if pushing to GitHub)
+  // ✅ RESTORED: Fallback keys preserved for private repository convenience
   TWELVE_DATA_KEY: process.env.TD_KEY || "5ba753f104e94af7b7345228d078c43e",
   TELEGRAM_TOKEN: process.env.TG_TOKEN || "8867660132:AAErPb1wWfg-sici_vUzp8KJsAJNRB33wPA",
   TELEGRAM_CHAT: process.env.TG_CHAT || "8719496087",
@@ -43,8 +45,6 @@ const CONFIG = {
 
 // ============================================================
 //  STATE MANAGEMENT 
-//  💡 RAILWAY TIP: Set STATE_PATH="/app/data/bot_state.json" in Env Vars 
-//  and attach a Persistent Volume to "/app/data" to prevent resets.
 // ============================================================
 const STATE_FILE = process.env.STATE_PATH || path.join(__dirname, "bot_state.json");
 let botState = { dayTrades: 0, dayKey: "", lastAlertKey: null, lastAlertBar: null };
@@ -62,13 +62,14 @@ function loadState() {
   }
 }
 
-function saveState() {
+// ✅ Async saveState to prevent Node.js event loop blocking
+async function saveState() {
   try {
     const dir = path.dirname(STATE_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify(botState, null, 2));
+    await fsp.writeFile(STATE_FILE, JSON.stringify(botState, null, 2));
   } catch (e) {
-    console.log("⚠️ State save error:", e.message);
+    console.log("⚠️ State save error (Check Railway Persistent Storage):", e.message);
   }
 }
 
@@ -76,12 +77,12 @@ let lastSignal = { signal: "NONE", time: null, reason: "Booting...", isDataFresh
 let candles = [];
 let consecutiveErrors = 0;
 let lastFetchTime = null;
-let isFetching = false; // ✅ FIX #2: Prevents race conditions & API limit spikes
+let isFetching = false; // ✅ Prevents race conditions & API limit spikes
 
 loadState();
 
 // ============================================================
-//  INDICATOR HELPERS (100% TradingView-Accurate via TI library)
+//  INDICATOR HELPERS
 // ============================================================
 function calcEMA(values, period) {
   const result = TI.EMA.calculate({ period, values });
@@ -103,12 +104,8 @@ function calcATR(candles, period = 14) {
 
 function calcMACD(values) {
   const result = TI.MACD.calculate({
-    values,
-    fastPeriod: 12,
-    slowPeriod: 26,
-    signalPeriod: 9,
-    SimpleMAOscillator: false,
-    SimpleMASignal: false,
+    values, fastPeriod: 12, slowPeriod: 26, signalPeriod: 9,
+    SimpleMAOscillator: false, SimpleMASignal: false,
   });
   const last = result[result.length - 1];
   return last ? { macd: last.MACD, signal: last.signal } : { macd: 0, signal: 0 };
@@ -129,20 +126,19 @@ function calcDMI(candles, period = 14) {
   const close = candles.map(c => c.close);
   const result = TI.ADX.calculate({ high, low, close, period });
   const last = result[result.length - 1];
-  return last
-    ? { adx: last.adx, diPlus: last.plusDI, diMinus: last.minusDI }
-    : { adx: 0, diPlus: 0, diMinus: 0 };
+  return last ? { adx: last.adx, diPlus: last.plusDI, diMinus: last.minusDI } : { adx: 0, diPlus: 0, diMinus: 0 };
 }
 
 // ============================================================
-//  SESSION & NEWS FILTERS (DST-aware + Better News Logic)
+//  SESSION & NEWS FILTERS
 // ============================================================
 function goodSession() {
   const now = new Date();
   const nyHour = parseInt(now.toLocaleString("en-US", { timeZone: "America/New_York", hour: "numeric", hour12: false }));
-  const london = nyHour >= 3 && nyHour < 7;   // 3am-7am NY = 8am-12pm London
-  const ny = nyHour >= 8 && nyHour < 17;      // Extended: 8am-5pm NY session
-  const overlap = nyHour >= 8 && nyHour < 12; // 8am-12pm NY = overlap
+  
+  const london = nyHour >= 3 && nyHour < 7;
+  const ny = nyHour >= 8 && nyHour < 17;
+  const overlap = nyHour >= 8 && nyHour < 12;
   
   return {
     active: london || ny,
@@ -168,9 +164,9 @@ function isNewsTime() {
 // ============================================================
 //  CORE ANALYSIS ENGINE
 // ============================================================
-function analyze() {
+async function analyze() {
   if (candles.length < 60) {
-    lastSignal = { signal: "NONE", reason: "Collecting initial data...", time: new Date().toISOString(), isDataFresh: true };
+    lastSignal = { signal: "NONE", reason: "Collecting data...", time: new Date().toISOString(), isDataFresh: true };
     return;
   }
 
@@ -178,10 +174,10 @@ function analyze() {
   const highs = candles.map(c => c.high);
   const lows = candles.map(c => c.low);
   
-  // ✅ REPAINTING FIX: Use last CLOSED candle for signal generation
+  // ✅ REPAINTING PREVENTION (Use CLOSED candles for logic)
   const lastClosed = candles[candles.length - 2];
   const prevClosed = candles[candles.length - 3];
-  const currentCandle = candles[candles.length - 1]; // Only for live price reference
+  const currentCandle = candles[candles.length - 1]; // Only for live price display
 
   const e9 = calcEMA(closes, 9);
   const e21 = calcEMA(closes, 21);
@@ -192,15 +188,14 @@ function analyze() {
   const s = calcStochK(candles);
   const d = calcDMI(candles);
 
-  // ✅ BONUS FIX: Smoother S/R using 10th percentile (ignores single abnormal wicks)
-  const sortedLows = [...lows.slice(-50)].sort((a, b) => a - b);
-  const sortedHighs = [...highs.slice(-50)].sort((a, b) => b - a);
+  // ✅ GENIUS S/R (10th percentile ignores single abnormal data spikes / fat-finger wicks)
+  const sortedLows = [...lows.slice(-50, -1)].sort((a, b) => a - b);
+  const sortedHighs = [...highs.slice(-50, -1)].sort((a, b) => b - a);
   const support = sortedLows[Math.floor(sortedLows.length * 0.1)]; 
   const resistance = sortedHighs[Math.floor(sortedHighs.length * 0.1)];
 
   const body = Math.abs(lastClosed.close - lastClosed.open);
   const prevBody = Math.abs(prevClosed.close - prevClosed.open);
-  
   const bullEngulf = lastClosed.close > lastClosed.open && prevClosed.close < prevClosed.open && lastClosed.open <= prevClosed.close && lastClosed.close >= prevClosed.open && body > prevBody;
   const bearEngulf = lastClosed.close < lastClosed.open && prevClosed.close > prevClosed.open && lastClosed.open >= prevClosed.close && lastClosed.close <= prevClosed.open && body > prevBody;
 
@@ -224,11 +219,10 @@ function analyze() {
   if (lastClosed.close > e21 && e21 > e50) buy += 2;
   if (m.macd > m.signal) buy += 2;
   if (d.adx > 25 && d.diPlus > d.diMinus) buy += 3;
-  if (s < 20) buy += 2;   // Oversold bounce
   if (lastClosed.low <= support + a && lastClosed.close > support) buy += 2;
   if (session.overlap) buy += 1;
-  // ✅ FIX #1: Strict RSI (No neutral overlap)
-  if (r < 45) buy += 1;   
+  if (r < 40) buy += 2;      // Oversold
+  if (s < 20) buy += 2;      // Deep Oversold
 
   // Sell Conditions
   if (strongBear) sell += 3;
@@ -237,21 +231,25 @@ function analyze() {
   if (lastClosed.close < e21 && e21 < e50) sell += 2;
   if (m.macd < m.signal) sell += 2;
   if (d.adx > 25 && d.diMinus > d.diPlus) sell += 3;
-  if (s > 80) sell += 2;   // Overbought rejection
   if (lastClosed.high >= resistance - a && lastClosed.close < resistance) sell += 2;
   if (session.overlap) sell += 1;
-  // ✅ FIX #1: Strict RSI (No neutral overlap)
-  if (r > 55) sell += 1;   
+  if (r > 60) sell += 2;     // Overbought
+  if (s > 80) sell += 2;     // Deep Overbought
 
-  // ✅ FIX #3: Day Reset based on LAST CLOSED CANDLE'S time (NY Timezone), NOT server time
-  const candleDateUTC = new Date(lastClosed.time.replace(' ', 'T') + 'Z');
-  const nyDateFromCandle = new Date(candleDateUTC.toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const todayKey = nyDateFromCandle.toISOString().slice(0, 10);
+  // ✅ SAFE TIMEZONE PARSING ('en-CA' guarantees safe YYYY-MM-DD format for Linux/Railway)
+  const candleTimeStr = lastClosed.time.replace(' ', 'T') + 'Z'; // Force UTC
+  const candleDateUTC = new Date(candleTimeStr);
+  
+  const nyFormatter = new Intl.DateTimeFormat('en-CA', { 
+    timeZone: 'America/New_York', 
+    year: 'numeric', month: '2-digit', day: '2-digit' 
+  });
+  const todayKey = nyFormatter.format(candleDateUTC); // Returns "2026-09-23" safely
 
   if (todayKey !== botState.dayKey) {
     botState.dayKey = todayKey;
     botState.dayTrades = 0;
-    saveState();
+    await saveState();
   }
 
   const canTrade = session.active && !newsPause && botState.dayTrades < CONFIG.MAX_TRADES_DAY;
@@ -267,12 +265,12 @@ function analyze() {
 
   if (buy >= CONFIG.MIN_CONFIRM && sell <= CONFIG.MAX_OPPOSITE && canTrade) {
     sig = "BUY";
-    entry = lastClosed.close + CONFIG.SPREAD;
+    entry = lastClosed.close + CONFIG.SPREAD; // Ask price
     sl = entry - slDist;
     tp = entry + tpDist;
   } else if (sell >= CONFIG.MIN_CONFIRM && buy <= CONFIG.MAX_OPPOSITE && canTrade) {
     sig = "SELL";
-    entry = lastClosed.close;
+    entry = lastClosed.close - CONFIG.SPREAD; // Bid price (Realistic SELL entry)
     sl = entry + slDist;
     tp = entry - tpDist;
   }
@@ -282,7 +280,7 @@ function analyze() {
     signal: sig,
     time: nowISO,
     barTime: lastClosed.time,
-    price: currentCandle.close, // Live price
+    price: currentCandle.close, // Shows live forming price, but logic is based on closed
     entry: sig !== "NONE" ? +entry.toFixed(2) : null,
     stopLoss: sl ? +sl.toFixed(2) : null,
     takeProfit: tp ? +tp.toFixed(2) : null,
@@ -309,10 +307,10 @@ function analyze() {
     botState.dayTrades++;
     botState.lastAlertKey = alertKey;
     botState.lastAlertBar = lastClosed.time;
-    saveState();
+    await saveState();
 
     lastSignal.tradesToday = botState.dayTrades;
-    sendTelegram(lastSignal);
+    await sendTelegram(lastSignal); // ✅ Added await for proper async flow
     console.log(`🚨 ALERT SENT [${nowISO}] ${sig} | price ${lastClosed.close} | buy ${buy} sell ${sell} | ${session.name}`);
   } else {
     console.log(`[${nowISO}] scan: buy ${buy} sell ${sell} | ${session.name} | no new alert`);
@@ -323,7 +321,6 @@ function analyze() {
 //  DATA FETCHING & TELEGRAM
 // ============================================================
 async function fetchData() {
-  // ✅ FIX #2: Race condition prevention
   if (isFetching) {
     console.log("⏳ Fetch skipped: Previous request still processing.");
     return;
@@ -354,14 +351,14 @@ async function fetchData() {
       low: parseFloat(v.low),
       close: parseFloat(v.close),
     }));
-    analyze();
+    await analyze(); // Await analyze since it's async
   } catch (e) {
     consecutiveErrors++;
     console.log("Fetch error:", e.message);
     if (lastSignal) lastSignal.isDataFresh = false;
   } finally {
     isFetching = false;
-    // ✅ FIX #2: Recursive setTimeout ensures next fetch ONLY starts after this one fully completes
+    // Recursive setTimeout ensures next fetch ONLY starts after this one fully completes
     setTimeout(fetchData, CONFIG.POLL_SECONDS * 1000);
   }
 }
@@ -380,11 +377,12 @@ setInterval(() => {
 async function sendTelegramRaw(text) {
   if (!CONFIG.TELEGRAM_TOKEN || !CONFIG.TELEGRAM_CHAT) return;
   try {
+    // ✅ Added 5s timeout to prevent Node.js hanging if Telegram servers are slow
     await axios.post(`https://api.telegram.org/bot${CONFIG.TELEGRAM_TOKEN}/sendMessage`, {
       chat_id: CONFIG.TELEGRAM_CHAT,
       text,
       parse_mode: "HTML",
-    });
+    }, { timeout: 5000 }); 
   } catch (e) {
     console.log("TG error:", e.response?.data || e.message);
   }
@@ -419,8 +417,8 @@ app.get("/health", (req, res) => res.json({
   candlesLoaded: candles.length,
   isDataFresh: lastSignal.isDataFresh,
   lastFetchTime,
-  isFetching: isFetching, // Added for debugging
-  state: botState
+  state: botState,
+  isFetching: isFetching
 }));
 
 const PORT = process.env.PORT || 3000;
@@ -429,16 +427,14 @@ app.listen(PORT, async () => {
   console.log(`📂 State file: ${STATE_FILE}`);
   console.log(`📊 Interval: ${CONFIG.INTERVAL} | Spread: ${CONFIG.SPREAD}`);
   
-  // ✅ FIX #4: Prevents spam on Railway free tier wake-ups
   if (process.env.DISABLE_BOOT_MSG !== "true") {
-    await sendTelegramRaw("✅ Gold Signal Server v2.4 (Final Bulletproof) is now LIVE. Repainting fixed + Smoother S/R + Race-condition protection active.");
+    await sendTelegramRaw("✅ Gold Signal Server v2.6 is now LIVE. Private repo keys restored + Telegram timeout active + Zero repaint.");
   }
  
-  // ✅ FIX #2: Start the recursive loop once, no setInterval needed
-  fetchData();
+  fetchData(); // Start the recursive loop once
 });
 
-// ✅ ERROR HANDLING FIX: Force exit so PM2/Railway can cleanly restart the bot
+// ✅ Proper crash handling: forces restart instead of hanging in a broken state
 process.on("unhandledRejection", (err) => {
   console.error("❌ Unhandled rejection:", err);
   process.exit(1);
