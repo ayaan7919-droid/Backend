@@ -2,13 +2,6 @@
 //  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v1.1 (fixed)
 //  Deploy on: Render.com / Railway / VPS (NOT Netlify for backend)
 //  Static dashboard (public/index.html) can go on Netlify.
-//
-//  KEY BEHAVIOR (as requested):
-//   - Server runs 24/7, polls market continuously
-//   - Telegram alert ONLY fires when a setup is STRONG + CONFIRMED
-//   - Same signal is NOT repeated/spammed — only sends once per new setup
-//   - No win-rate is guaranteed by this or any code. Filters are tuned
-//     for quality over quantity, not for a promised accuracy number.
 // ============================================================
 
 const express = require("express");
@@ -20,33 +13,27 @@ app.use(cors());
 app.use(express.static("public"));
 
 // ============================================================
-//  CONFIG  (apne hisaab se badal)
+//  CONFIG
 // ============================================================
 const CONFIG = {
   SYMBOL: "XAU/USD",
-  INTERVAL: "1min",          // real-time ke liye 1-min candles
-  SPREAD: 0.30,               // apna real spread daal
-  CONTRACT_SIZE: 100,         // 1 lot = 100 oz
-  ACCOUNT_BALANCE: 1000,      // apna balance
-  RISK_PERCENT: 1.0,          // per trade risk %
+  INTERVAL: "1min",          
+  SPREAD: 0.30,               
+  CONTRACT_SIZE: 100,         
+  ACCOUNT_BALANCE: 1000,      
+  RISK_PERCENT: 1.0,          
   ATR_SL: 2.0,
   ATR_TP: 5.0,
   MIN_RR: 2.5,
 
-  // STRICT confirmation threshold — zyada high = kam signals, better quality
-  MIN_CONFIRM: 12,            // 9 se badhaya 12 (out of ~18 max points)
-  MAX_OPPOSITE: 3,            // opposite side score isse kam hona chahiye
+  MIN_CONFIRM: 12,            
+  MAX_OPPOSITE: 3,            
 
   MAX_TRADES_DAY: 3,
-  POLL_SECONDS: 60,           // har 60 sec market check (24/7)
+  POLL_SECONDS: 300,          // 5 minutes (API limit safe)
 
-  // FREE data source: twelvedata.com se free API key le lo
   TWELVE_DATA_KEY: process.env.TD_KEY || "5ba753f104e94af7b7345228d078c43e",
 
-  // Telegram (zaroori hai agar alert chahiye)
-  // NOTE: agar repo PUBLIC hai to ye hardcoded values sabko dikhengi —
-  // koi bhi tera bot control kar sakta hai. Private repo rakh, ya
-  // Railway ke Variables tab me hi daal aur yahan khali chhod de.
   TELEGRAM_TOKEN: process.env.TG_TOKEN || "8867660132:AAErPb1wWfg-sici_vUzp8KJsAJNRB33wPA",
   TELEGRAM_CHAT: process.env.TG_CHAT || "8719496087",
 };
@@ -58,8 +45,8 @@ let lastSignal = { signal: "NONE", time: null, reason: "Booting..." };
 let candles = [];
 let dayTrades = 0;
 let dayKey = "";
-let lastAlertKey = null;      // duplicate-alert prevention
-let lastAlertBar = null;      // last candle time an alert was sent for
+let lastAlertKey = null;      
+let lastAlertBar = null;      
 let consecutiveErrors = 0;
 
 // ============================================================
@@ -135,14 +122,11 @@ function dmi(c, period = 14) {
   return { diPlus, diMinus, adx: dx };
 }
 
-// ============================================================
-//  SESSION FILTER (GMT) — London + NY overlap zyada volatile/reliable
-// ============================================================
 function goodSession() {
   const h = new Date().getUTCHours();
   const london = h >= 8 && h < 12;
   const ny = h >= 13 && h < 17;
-  const overlap = h >= 13 && h < 16; // London-NY overlap, best liquidity
+  const overlap = h >= 13 && h < 16;
   return {
     active: london || ny,
     overlap,
@@ -150,9 +134,6 @@ function goodSession() {
   };
 }
 
-// ============================================================
-//  SIGNAL ENGINE — strict, only fires on strong confirmed setups
-// ============================================================
 function analyze() {
   if (candles.length < 60) {
     lastSignal = { signal: "NONE", reason: "Collecting data...", time: new Date().toISOString() };
@@ -193,7 +174,6 @@ function analyze() {
 
   const session = goodSession();
 
-  // ---- scoring ----
   let buy = 0, sell = 0;
   if (strongBull) buy += 3;
   if (bullEngulf) buy += 3;
@@ -204,7 +184,7 @@ function analyze() {
   if (d.adx > 25 && d.diPlus > d.diMinus) buy += 3;
   if (s < 80) buy += 1;
   if (last.low <= support + a && last.close > support) buy += 2;
-  if (session.overlap) buy += 1;          // bonus for high-liquidity window
+  if (session.overlap) buy += 1;
 
   if (strongBear) sell += 3;
   if (bearEngulf) sell += 3;
@@ -230,7 +210,6 @@ function analyze() {
 
   let sig = "NONE", entry = last.close, sl = null, tp = null;
 
-  // STRICT: both a high score AND the opposite side must be weak
   if (buy >= CONFIG.MIN_CONFIRM && sell <= CONFIG.MAX_OPPOSITE && canTrade) {
     sig = "BUY";
     entry = last.close + CONFIG.SPREAD;
@@ -267,7 +246,6 @@ function analyze() {
       : "Strong confirmed setup",
   };
 
-  // ---- Only alert once per NEW confirmed setup on a NEW candle ----
   const alertKey = `${sig}-${last.time}`;
   if (sig !== "NONE" && alertKey !== lastAlertKey && last.time !== lastAlertBar) {
     dayTrades++;
@@ -281,9 +259,6 @@ function analyze() {
   }
 }
 
-// ============================================================
-//  FETCH GOLD DATA (TwelveData free API)
-// ============================================================
 async function fetchData() {
   try {
     const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(CONFIG.SYMBOL)}&interval=${CONFIG.INTERVAL}&outputsize=200&apikey=${CONFIG.TWELVE_DATA_KEY}`;
@@ -312,9 +287,6 @@ async function fetchData() {
   }
 }
 
-// ============================================================
-//  TELEGRAM ALERT
-// ============================================================
 async function sendTelegramRaw(text) {
   if (!CONFIG.TELEGRAM_TOKEN || !CONFIG.TELEGRAM_CHAT) return;
   try {
@@ -343,16 +315,9 @@ async function sendTelegram(sig) {
   await sendTelegramRaw(msg);
 }
 
-// ============================================================
-//  API ROUTES
-// ============================================================
-app.get("/", (req, res) => res.json({ status: "Gold Signal Server running 24/7", signal: lastSignal }));
 app.get("/signal", (req, res) => res.json(lastSignal));
 app.get("/health", (req, res) => res.json({ ok: true, time: new Date().toISOString(), candlesLoaded: candles.length }));
 
-// ============================================================
-//  START — continuous 24/7 loop
-// ============================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log(`✅ Server running on port ${PORT} — polling every ${CONFIG.POLL_SECONDS}s`);
@@ -361,6 +326,5 @@ app.listen(PORT, async () => {
   setInterval(fetchData, CONFIG.POLL_SECONDS * 1000);
 });
 
-// Keep process alive / log unexpected crashes instead of dying silently
 process.on("unhandledRejection", (err) => console.log("Unhandled rejection:", err));
 process.on("uncaughtException", (err) => console.log("Uncaught exception:", err));
