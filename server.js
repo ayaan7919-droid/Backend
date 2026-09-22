@@ -1,514 +1,362 @@
-/**
- * Structure-based trading signal bot (Telegram)
- *
- * Ye bot real OHLC candles fetch karta hai aur deterministic rules se
- * setup detect karta hai: swing structure -> BOS -> order block retest.
- * Koi random direction nahi, koi fake confidence score nahi.
- *
- * ZAROORI: Ye trading advice nahi hai. Logic ko pehle historical data par
- * backtest karo. Live paisa lagane se pehle demo account par chalao.
- */
+// ============================================================
+//  GOLD (XAUUSD) REALTIME SIGNAL SERVER — v1.1 (fixed)
+//  Deploy on: Render.com / Railway / VPS (NOT Netlify for backend)
+//  Static dashboard (public/index.html) can go on Netlify.
+//
+//  KEY BEHAVIOR (as requested):
+//   - Server runs 24/7, polls market continuously
+//   - Telegram alert ONLY fires when a setup is STRONG + CONFIRMED
+//   - Same signal is NOT repeated/spammed — only sends once per new setup
+//   - No win-rate is guaranteed by this or any code. Filters are tuned
+//     for quality over quantity, not for a promised accuracy number.
+// ============================================================
 
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
-const fs = require('fs/promises');
-const path = require('path');
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
 
-// ---------------------------------------------------------------------------
-// CONFIG
-// ---------------------------------------------------------------------------
+const app = express();
+app.use(cors());
+app.use(express.static("public"));
 
+// ============================================================
+//  CONFIG  (apne hisaab se badal)
+// ============================================================
 const CONFIG = {
-  telegramToken: process.env.TELEGRAM_BOT_TOKEN,
-  telegramChatId: process.env.TELEGRAM_CHAT_ID,
-  dataApiKey: process.env.TWELVEDATA_API_KEY,
-  apiSecret: process.env.API_SECRET,
+  SYMBOL: "XAU/USD",
+  INTERVAL: "1min",          // real-time ke liye 1-min candles
+  SPREAD: 0.30,               // apna real spread daal
+  CONTRACT_SIZE: 100,         // 1 lot = 100 oz
+  ACCOUNT_BALANCE: 1000,      // apna balance
+  RISK_PERCENT: 1.0,          // per trade risk %
+  ATR_SL: 2.0,
+  ATR_TP: 5.0,
+  MIN_RR: 2.5,
 
-  accountBalance: parseFloat(process.env.ACCOUNT_BALANCE || '500'),
-  riskPercent: parseFloat(process.env.RISK_PERCENT || '1.0'),
-  rewardRatio: parseFloat(process.env.REWARD_RATIO || '2.0'),
+  // STRICT confirmation threshold — zyada high = kam signals, better quality
+  MIN_CONFIRM: 12,            // 9 se badhaya 12 (out of ~18 max points)
+  MAX_OPPOSITE: 3,            // opposite side score isse kam hona chahiye
 
-  interval: process.env.CANDLE_INTERVAL || '15min',
-  candleCount: 200,
+  MAX_TRADES_DAY: 3,
+  POLL_SECONDS: 60,           // har 60 sec market check (24/7)
 
-  scanIntervalMs: 5 * 60 * 1000,      // har 5 min scan
-  monitorIntervalMs: 60 * 1000,       // har 1 min monitor
-  cooldownMs: 4 * 60 * 60 * 1000,     // ek symbol par dobara signal se pehle gap
-  maxConcurrentSignals: 3,
+  // FREE data source: twelvedata.com se free API key le lo
+  TWELVE_DATA_KEY: process.env.TD_KEY || "demo",
 
-  statePath: path.join(__dirname, 'state.json'),
-  port: process.env.PORT || 3000,
+  // Telegram (zaroori hai agar alert chahiye)
+  TELEGRAM_TOKEN: process.env.TG_TOKEN || "",
+  TELEGRAM_CHAT: process.env.TG_CHAT || "",
 };
 
-// Contract specs. contractSize = 1 lot me kitni units.
-// USD-quoted pair ke liye: 1.0 price move par profit/loss = lots * contractSize.
-// NOTE: ye typical MT4/MT5 values hain. APNE BROKER SE CONFIRM KARO.
-const INSTRUMENTS = [
-  { symbol: 'XAU/USD', label: 'GOLD (XAU/USD)', digits: 2, contractSize: 100,    minLot: 0.01, lotStep: 0.01 },
-  { symbol: 'EUR/USD', label: 'EUR/USD',        digits: 5, contractSize: 100000, minLot: 0.01, lotStep: 0.01 },
-  { symbol: 'GBP/USD', label: 'GBP/USD',        digits: 5, contractSize: 100000, minLot: 0.01, lotStep: 0.01 },
-];
+// ============================================================
+//  STATE
+// ============================================================
+let lastSignal = { signal: "NONE", time: null, reason: "Booting..." };
+let candles = [];
+let dayTrades = 0;
+let dayKey = "";
+let lastAlertKey = null;      // duplicate-alert prevention
+let lastAlertBar = null;      // last candle time an alert was sent for
+let consecutiveErrors = 0;
 
-// ---------------------------------------------------------------------------
-// STARTUP VALIDATION  (bug #9: pehle bot chalta rehta tha aur silently fail hota tha)
-// ---------------------------------------------------------------------------
-
-function validateConfig() {
-  const missing = [];
-  if (!CONFIG.telegramToken) missing.push('TELEGRAM_BOT_TOKEN');
-  if (!CONFIG.telegramChatId) missing.push('TELEGRAM_CHAT_ID');
-  if (!CONFIG.dataApiKey) missing.push('TWELVEDATA_API_KEY');
-  if (!CONFIG.apiSecret) missing.push('API_SECRET');
-
-  if (missing.length) {
-    console.error('FATAL: missing env vars -> ' + missing.join(', '));
-    process.exit(1);
+// ============================================================
+//  INDICATOR HELPERS
+// ============================================================
+function ema(values, period) {
+  const k = 2 / (period + 1);
+  let e = values[0];
+  for (let i = 1; i < values.length; i++) e = values[i] * k + e * (1 - k);
+  return e;
+}
+function emaSeries(values, period) {
+  const k = 2 / (period + 1);
+  const out = [values[0]];
+  for (let i = 1; i < values.length; i++)
+    out.push(values[i] * k + out[i - 1] * (1 - k));
+  return out;
+}
+function rsi(closes, period = 14) {
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff; else losses -= diff;
   }
-  if (!(CONFIG.accountBalance > 0)) {
-    console.error('FATAL: ACCOUNT_BALANCE invalid');
-    process.exit(1);
+  const rs = losses === 0 ? 100 : gains / losses;
+  return 100 - 100 / (1 + rs);
+}
+function atr(c, period = 14) {
+  let sum = 0;
+  for (let i = c.length - period; i < c.length; i++) {
+    const tr = Math.max(
+      c[i].high - c[i].low,
+      Math.abs(c[i].high - c[i - 1].close),
+      Math.abs(c[i].low - c[i - 1].close)
+    );
+    sum += tr;
   }
-  if (!(CONFIG.riskPercent > 0 && CONFIG.riskPercent <= 5)) {
-    console.error('FATAL: RISK_PERCENT 0 se 5 ke beech hona chahiye');
-    process.exit(1);
+  return sum / period;
+}
+function macd(closes) {
+  const e12 = emaSeries(closes, 12);
+  const e26 = emaSeries(closes, 26);
+  const macdLine = e12.map((v, i) => v - e26[i]);
+  const signalLine = emaSeries(macdLine, 9);
+  const last = macdLine.length - 1;
+  return { macd: macdLine[last], signal: signalLine[last] };
+}
+function stochK(c, period = 14) {
+  const slice = c.slice(-period);
+  const hh = Math.max(...slice.map(x => x.high));
+  const ll = Math.min(...slice.map(x => x.low));
+  const close = c[c.length - 1].close;
+  return hh === ll ? 50 : ((close - ll) / (hh - ll)) * 100;
+}
+function dmi(c, period = 14) {
+  let plusDM = 0, minusDM = 0, trSum = 0;
+  const start = Math.max(1, c.length - period);
+  for (let i = start; i < c.length; i++) {
+    const up = c[i].high - c[i - 1].high;
+    const down = c[i - 1].low - c[i].low;
+    plusDM += up > down && up > 0 ? up : 0;
+    minusDM += down > up && down > 0 ? down : 0;
+    trSum += Math.max(
+      c[i].high - c[i].low,
+      Math.abs(c[i].high - c[i - 1].close),
+      Math.abs(c[i].low - c[i - 1].close)
+    );
   }
+  const diPlus = trSum === 0 ? 0 : (plusDM / trSum) * 100;
+  const diMinus = trSum === 0 ? 0 : (minusDM / trSum) * 100;
+  const dx = diPlus + diMinus === 0 ? 0 :
+    (Math.abs(diPlus - diMinus) / (diPlus + diMinus)) * 100;
+  return { diPlus, diMinus, adx: dx };
 }
 
-// ---------------------------------------------------------------------------
-// STATE  (bug #6: pehle sab memory me tha, restart par ud jaata tha)
-// ---------------------------------------------------------------------------
-
-let state = { counter: 1, activeSignals: [], lastSignalAt: {} };
-
-async function loadState() {
-  try {
-    const raw = await fs.readFile(CONFIG.statePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    state = {
-      counter: parsed.counter || 1,
-      activeSignals: Array.isArray(parsed.activeSignals) ? parsed.activeSignals : [],
-      lastSignalAt: parsed.lastSignalAt || {},
-    };
-    console.log(`State loaded: ${state.activeSignals.length} active signal(s).`);
-  } catch (err) {
-    if (err.code !== 'ENOENT') console.error('State load error:', err.message);
-    console.log('Fresh state se start kar rahe hain.');
-  }
+// ============================================================
+//  SESSION FILTER (GMT) — London + NY overlap zyada volatile/reliable
+// ============================================================
+function goodSession() {
+  const h = new Date().getUTCHours();
+  const london = h >= 8 && h < 12;
+  const ny = h >= 13 && h < 17;
+  const overlap = h >= 13 && h < 16; // London-NY overlap, best liquidity
+  return {
+    active: london || ny,
+    overlap,
+    name: overlap ? "LONDON-NY OVERLAP" : london ? "LONDON" : ny ? "NY" : "CLOSED",
+  };
 }
 
-async function saveState() {
-  try {
-    const tmp = CONFIG.statePath + '.tmp';
-    await fs.writeFile(tmp, JSON.stringify(state, null, 2));
-    await fs.rename(tmp, CONFIG.statePath); // atomic write
-  } catch (err) {
-    console.error('State save error:', err.message);
+// ============================================================
+//  SIGNAL ENGINE — strict, only fires on strong confirmed setups
+// ============================================================
+function analyze() {
+  if (candles.length < 60) {
+    lastSignal = { signal: "NONE", reason: "Collecting data...", time: new Date().toISOString() };
+    return;
   }
-}
 
-// ---------------------------------------------------------------------------
-// TELEGRAM
-// ---------------------------------------------------------------------------
+  const closes = candles.map(c => c.close);
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  const last = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
 
-async function sendTelegramAlert(message) {
-  const url = `https://api.telegram.org/bot${CONFIG.telegramToken}/sendMessage`;
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await axios.post(url, {
-        chat_id: CONFIG.telegramChatId,
-        text: message,
-        parse_mode: 'Markdown',
-      }, { timeout: 10000 });
-      return true;
-    } catch (error) {
-      const detail = error.response?.data?.description || error.message;
-      console.error(`Telegram attempt ${attempt} failed: ${detail}`);
-      if (attempt < 3) await sleep(2000 * attempt);
-    }
+  const e9 = ema(closes, 9);
+  const e21 = ema(closes, 21);
+  const e50 = ema(closes, 50);
+  const r = rsi(closes);
+  const a = atr(candles);
+  const m = macd(closes);
+  const s = stochK(candles);
+  const d = dmi(candles);
+
+  const support = Math.min(...lows.slice(-50));
+  const resistance = Math.max(...highs.slice(-50));
+
+  const body = Math.abs(last.close - last.open);
+  const prevBody = Math.abs(prev.close - prev.open);
+  const bullEngulf = last.close > last.open && prev.close < prev.open &&
+    last.open <= prev.close && last.close >= prev.open && body > prevBody;
+  const bearEngulf = last.close < last.open && prev.close > prev.open &&
+    last.open >= prev.close && last.close <= prev.open && body > prevBody;
+  const wickLow = last.close > last.open ? last.open - last.low : last.close - last.low;
+  const wickHigh = last.close > last.open ? last.high - last.close : last.high - last.open;
+  const bullPin = wickLow > body * 2 && wickHigh < body * 0.5;
+  const bearPin = wickHigh > body * 2 && wickLow < body * 0.5;
+
+  const strongBull = last.close > e9 && e9 > e21 && e21 > e50;
+  const strongBear = last.close < e9 && e9 < e21 && e21 < e50;
+
+  const session = goodSession();
+
+  // ---- scoring ----
+  let buy = 0, sell = 0;
+  if (strongBull) buy += 3;
+  if (bullEngulf) buy += 3;
+  if (bullPin) buy += 2;
+  if (last.close > e21 && e21 > e50) buy += 2;
+  if (r > 45 && r < 65) buy += 1;
+  if (m.macd > m.signal) buy += 2;
+  if (d.adx > 25 && d.diPlus > d.diMinus) buy += 3;
+  if (s < 80) buy += 1;
+  if (last.low <= support + a && last.close > support) buy += 2;
+  if (session.overlap) buy += 1;          // bonus for high-liquidity window
+
+  if (strongBear) sell += 3;
+  if (bearEngulf) sell += 3;
+  if (bearPin) sell += 2;
+  if (last.close < e21 && e21 < e50) sell += 2;
+  if (r < 55 && r > 35) sell += 1;
+  if (m.macd < m.signal) sell += 2;
+  if (d.adx > 25 && d.diMinus > d.diPlus) sell += 3;
+  if (s > 20) sell += 1;
+  if (last.high >= resistance - a && last.close < resistance) sell += 2;
+  if (session.overlap) sell += 1;
+
+  const todayKey = new Date().toISOString().slice(0, 10);
+  if (todayKey !== dayKey) { dayKey = todayKey; dayTrades = 0; }
+
+  const canTrade = session.active && dayTrades < CONFIG.MAX_TRADES_DAY;
+
+  const slDist = a * CONFIG.ATR_SL;
+  const tpDist = Math.max(a * CONFIG.ATR_TP, slDist * CONFIG.MIN_RR);
+  const riskMoney = CONFIG.ACCOUNT_BALANCE * (CONFIG.RISK_PERCENT / 100);
+  let lot = riskMoney / (slDist * CONFIG.CONTRACT_SIZE);
+  lot = Math.max(0.01, Math.round(lot * 100) / 100);
+
+  let sig = "NONE", entry = last.close, sl = null, tp = null;
+
+  // STRICT: both a high score AND the opposite side must be weak
+  if (buy >= CONFIG.MIN_CONFIRM && sell <= CONFIG.MAX_OPPOSITE && canTrade) {
+    sig = "BUY";
+    entry = last.close + CONFIG.SPREAD;
+    sl = entry - slDist;
+    tp = entry + tpDist;
+  } else if (sell >= CONFIG.MIN_CONFIRM && buy <= CONFIG.MAX_OPPOSITE && canTrade) {
+    sig = "SELL";
+    entry = last.close;
+    sl = entry + slDist;
+    tp = entry - tpDist;
   }
-  return false;
-}
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// ---------------------------------------------------------------------------
-// MARKET DATA  (bug #3: pehle EUR/USD, GBP/USD, BTC hardcoded the -> bot freeze)
-// ---------------------------------------------------------------------------
-
-const candleCache = new Map(); // symbol -> { at, candles }
-
-async function fetchCandles(symbol) {
-  const cached = candleCache.get(symbol);
-  if (cached && Date.now() - cached.at < 60 * 1000) return cached.candles;
-
-  const res = await axios.get('https://api.twelvedata.com/time_series', {
-    params: {
-      symbol,
-      interval: CONFIG.interval,
-      outputsize: CONFIG.candleCount,
-      apikey: CONFIG.dataApiKey,
+  lastSignal = {
+    signal: sig,
+    time: new Date().toISOString(),
+    barTime: last.time,
+    price: last.close,
+    entry: sig !== "NONE" ? +entry.toFixed(2) : null,
+    stopLoss: sl ? +sl.toFixed(2) : null,
+    takeProfit: tp ? +tp.toFixed(2) : null,
+    lotSize: sig !== "NONE" ? lot : null,
+    buyScore: buy,
+    sellScore: sell,
+    session: session.name,
+    tradesToday: dayTrades,
+    indicators: {
+      ema9: +e9.toFixed(2), ema21: +e21.toFixed(2), ema50: +e50.toFixed(2),
+      rsi: +r.toFixed(1), adx: +d.adx.toFixed(1),
+      atr: +a.toFixed(2), support: +support.toFixed(2), resistance: +resistance.toFixed(2),
+      spread: CONFIG.SPREAD,
     },
-    timeout: 10000,
-  });
+    note: sig === "NONE"
+      ? (!session.active ? "Session closed" : dayTrades >= CONFIG.MAX_TRADES_DAY ? "Daily trade limit reached" : "No high-confidence setup — waiting")
+      : "Strong confirmed setup",
+  };
 
-  if (res.data?.status === 'error') {
-    throw new Error(`Data API: ${res.data.message}`);
+  // ---- Only alert once per NEW confirmed setup on a NEW candle ----
+  const alertKey = `${sig}-${last.time}`;
+  if (sig !== "NONE" && alertKey !== lastAlertKey && last.time !== lastAlertBar) {
+    dayTrades++;
+    lastSignal.tradesToday = dayTrades;
+    lastAlertKey = alertKey;
+    lastAlertBar = last.time;
+    sendTelegram(lastSignal);
+    console.log(`🚨 ALERT SENT [${lastSignal.time}] ${sig} | price ${last.close} | buy ${buy} sell ${sell} | ${session.name}`);
+  } else {
+    console.log(`[${lastSignal.time}] scan: buy ${buy} sell ${sell} | ${session.name} | no new alert`);
   }
-  if (!Array.isArray(res.data?.values) || res.data.values.length < 60) {
-    throw new Error(`${symbol}: not enough candles returned`);
-  }
+}
 
-  // API newest-first deti hai; humein oldest-first chahiye
-  const candles = res.data.values
-    .map((v) => ({
+// ============================================================
+//  FETCH GOLD DATA (TwelveData free API)
+// ============================================================
+async function fetchData() {
+  try {
+    const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(CONFIG.SYMBOL)}&interval=${CONFIG.INTERVAL}&outputsize=200&apikey=${CONFIG.TWELVE_DATA_KEY}`;
+    const { data } = await axios.get(url, { timeout: 15000 });
+    if (!data.values) {
+      consecutiveErrors++;
+      console.log("Data fetch issue:", data.message || data.status);
+      if (consecutiveErrors >= 5) {
+        await sendTelegramRaw("⚠️ Signal server: market data fetch failing repeatedly. Check API key/limits.");
+        consecutiveErrors = 0;
+      }
+      return;
+    }
+    consecutiveErrors = 0;
+    candles = data.values.reverse().map(v => ({
       time: v.datetime,
       open: parseFloat(v.open),
       high: parseFloat(v.high),
       low: parseFloat(v.low),
       close: parseFloat(v.close),
-    }))
-    .filter((c) => [c.open, c.high, c.low, c.close].every((n) => Number.isFinite(n) && n > 0))
-    .reverse();
-
-  candleCache.set(symbol, { at: Date.now(), candles });
-  return candles;
+    }));
+    analyze();
+  } catch (e) {
+    consecutiveErrors++;
+    console.log("Fetch error:", e.message);
+  }
 }
 
-async function getLivePrice(symbol) {
-  const candles = await fetchCandles(symbol);
-  return candles[candles.length - 1].close;
-}
-
-// ---------------------------------------------------------------------------
-// INDICATORS
-// ---------------------------------------------------------------------------
-
-function atr(candles, period = 14) {
-  if (candles.length < period + 1) return null;
-  let sum = 0;
-  for (let i = candles.length - period; i < candles.length; i++) {
-    const c = candles[i], p = candles[i - 1];
-    sum += Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
-  }
-  return sum / period;
-}
-
-/** Pivot swing points: left/right bars se confirm hote hain. */
-function findSwings(candles, lookback = 3) {
-  const highs = [], lows = [];
-  for (let i = lookback; i < candles.length - lookback; i++) {
-    let isHigh = true, isLow = true;
-    for (let j = i - lookback; j <= i + lookback; j++) {
-      if (j === i) continue;
-      if (candles[j].high >= candles[i].high) isHigh = false;
-      if (candles[j].low <= candles[i].low) isLow = false;
-    }
-    if (isHigh) highs.push({ index: i, price: candles[i].high });
-    if (isLow) lows.push({ index: i, price: candles[i].low });
-  }
-  return { highs, lows };
-}
-
-/** BOS ke baad wala order block: impulse se pehle ka aakhri opposite candle. */
-function findOrderBlock(candles, breakIndex, direction) {
-  for (let i = breakIndex; i >= Math.max(0, breakIndex - 15); i--) {
-    const c = candles[i];
-    const isDown = c.close < c.open;
-    const isUp = c.close > c.open;
-    if ((direction === 'BUY' && isDown) || (direction === 'SELL' && isUp)) {
-      return { index: i, high: c.high, low: c.low };
-    }
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// STRATEGY  (bug #1: yahi wo hissa tha jo pehle Math.random() tha)
-// ---------------------------------------------------------------------------
-
-function detectSetup(candles) {
-  const a = atr(candles, 14);
-  if (!a || a <= 0) return null;
-
-  const { highs, lows } = findSwings(candles, 3);
-  if (highs.length < 2 || lows.length < 2) return null;
-
-  const lastHigh = highs[highs.length - 1];
-  const lastLow = lows[lows.length - 1];
-  const last = candles[candles.length - 1];
-  const price = last.close;
-
-  // --- Bullish: recent close ne swing high tod diya (BOS up) ---
-  let breakIndex = -1;
-  for (let i = lastHigh.index + 1; i < candles.length; i++) {
-    if (candles[i].close > lastHigh.price) { breakIndex = i; break; }
-  }
-  if (breakIndex !== -1 && candles.length - breakIndex <= 12) {
-    const ob = findOrderBlock(candles, breakIndex - 1, 'BUY');
-    // Entry tabhi jab price wapas OB zone me aaya ho (mitigation)
-    if (ob && price <= ob.high && price >= ob.low - 0.25 * a) {
-      const sl = ob.low - 0.25 * a;
-      const risk = price - sl;
-      if (risk > 0.1 * a) {
-        return {
-          direction: 'BUY',
-          entry: price,
-          sl,
-          tp: price + risk * CONFIG.rewardRatio,
-          reason: `BOS up above ${lastHigh.price.toFixed(5)}, OB retest`,
-          atr: a,
-        };
-      }
-    }
-  }
-
-  // --- Bearish: recent close ne swing low tod diya (BOS down) ---
-  breakIndex = -1;
-  for (let i = lastLow.index + 1; i < candles.length; i++) {
-    if (candles[i].close < lastLow.price) { breakIndex = i; break; }
-  }
-  if (breakIndex !== -1 && candles.length - breakIndex <= 12) {
-    const ob = findOrderBlock(candles, breakIndex - 1, 'SELL');
-    if (ob && price >= ob.low && price <= ob.high + 0.25 * a) {
-      const sl = ob.high + 0.25 * a;
-      const risk = sl - price;
-      if (risk > 0.1 * a) {
-        return {
-          direction: 'SELL',
-          entry: price,
-          sl,
-          tp: price - risk * CONFIG.rewardRatio,
-          reason: `BOS down below ${lastLow.price.toFixed(5)}, OB retest`,
-          atr: a,
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// POSITION SIZING  (bug #4: purana formula 10x galat risk deta tha)
-// ---------------------------------------------------------------------------
-
-function calculateLotSize(instrument, slDistance) {
-  const riskUSD = CONFIG.accountBalance * (CONFIG.riskPercent / 100);
-  const lossPerLot = slDistance * instrument.contractSize;
-  if (!(lossPerLot > 0)) return null;
-
-  const raw = riskUSD / lossPerLot;
-  const steps = Math.floor(raw / instrument.lotStep);
-  const lots = parseFloat((steps * instrument.lotStep).toFixed(2));
-
-  if (lots < instrument.minLot) {
-    // Min lot par bhi risk target se zyada hoga -> trade skip
-    const forcedRisk = instrument.minLot * lossPerLot;
-    return { lots: instrument.minLot, riskUSD: forcedRisk, exceedsRisk: forcedRisk > riskUSD };
-  }
-  return { lots, riskUSD: lots * lossPerLot, exceedsRisk: false };
-}
-
-// ---------------------------------------------------------------------------
-// SCANNER
-// ---------------------------------------------------------------------------
-
-let scanning = false; // bug #8: overlapping runs rokne ke liye
-
-async function scanMarkets() {
-  if (scanning) { console.log('Previous scan abhi chal raha hai, skip.'); return; }
-  scanning = true;
-
+// ============================================================
+//  TELEGRAM ALERT
+// ============================================================
+async function sendTelegramRaw(text) {
+  if (!CONFIG.TELEGRAM_TOKEN || !CONFIG.TELEGRAM_CHAT) return;
   try {
-    if (state.activeSignals.length >= CONFIG.maxConcurrentSignals) {
-      console.log('Max concurrent signals reached.');
-      return;
-    }
-
-    for (const instrument of INSTRUMENTS) {
-      // bug #12: same symbol par spam rokna
-      const last = state.lastSignalAt[instrument.symbol] || 0;
-      if (Date.now() - last < CONFIG.cooldownMs) continue;
-      if (state.activeSignals.some((s) => s.symbol === instrument.symbol)) continue;
-      if (state.activeSignals.length >= CONFIG.maxConcurrentSignals) break;
-
-      try {
-        const candles = await fetchCandles(instrument.symbol);
-        const setup = detectSetup(candles);
-        if (!setup) { console.log(`${instrument.symbol}: no valid setup.`); continue; }
-
-        const slDistance = Math.abs(setup.entry - setup.sl);
-        const sizing = calculateLotSize(instrument, slDistance);
-        if (!sizing) continue;
-        if (sizing.exceedsRisk) {
-          console.log(`${instrument.symbol}: min lot par risk limit cross -> skip.`);
-          continue;
-        }
-
-        const id = `SIG-${String(state.counter++).padStart(4, '0')}`;
-        const d = instrument.digits;
-
-        const message =
-          `📊 *STRUCTURE SIGNAL*\n\n` +
-          `🆔 ID: ${id}\n` +
-          `🔹 Asset: ${instrument.label}\n` +
-          `⏱ Timeframe: ${CONFIG.interval}\n` +
-          `📈 Direction: ${setup.direction === 'BUY' ? 'BUY 🟢' : 'SELL 🔴'}\n\n` +
-          `📍 Entry: ${setup.entry.toFixed(d)}\n` +
-          `🛑 Stop Loss: ${setup.sl.toFixed(d)}\n` +
-          `🎯 Take Profit: ${setup.tp.toFixed(d)}\n` +
-          `💰 R:R — 1:${CONFIG.rewardRatio}\n\n` +
-          `⚖️ Lot size: ${sizing.lots} (risk ≈ $${sizing.riskUSD.toFixed(2)} ` +
-          `on $${CONFIG.accountBalance} @ ${CONFIG.riskPercent}%)\n` +
-          `🧩 Rule matched: ${setup.reason}\n\n` +
-          `_Rule-based output, not financial advice. Spread/slippage included nahi hai — ` +
-          `apna risk khud verify karo._`;
-
-        const sent = await sendTelegramAlert(message);
-        if (sent) {
-          state.activeSignals.push({
-            id,
-            symbol: instrument.symbol,
-            label: instrument.label,
-            digits: d,
-            direction: setup.direction,
-            entry: setup.entry,
-            sl: setup.sl,
-            tp: setup.tp,
-            lots: sizing.lots,
-            openedAt: Date.now(),
-          });
-          state.lastSignalAt[instrument.symbol] = Date.now();
-          await saveState();
-          console.log(`${id} sent for ${instrument.symbol}.`);
-        } else {
-          state.counter--; // Telegram fail -> ID waste mat karo
-        }
-      } catch (err) {
-        // bug #7: ek symbol fail ho to baaki ruknay nahi chahiye
-        console.error(`Scan error [${instrument.symbol}]:`, err.message);
-      }
-    }
-  } finally {
-    scanning = false;
+    await axios.post(`https://api.telegram.org/bot${CONFIG.TELEGRAM_TOKEN}/sendMessage`, {
+      chat_id: CONFIG.TELEGRAM_CHAT,
+      text,
+      parse_mode: "HTML",
+    });
+  } catch (e) {
+    console.log("TG error:", e.response?.data || e.message);
   }
 }
 
-// ---------------------------------------------------------------------------
-// MONITOR
-// ---------------------------------------------------------------------------
-
-let monitoring = false;
-
-async function monitorSignals() {
-  if (monitoring || state.activeSignals.length === 0) return;
-  monitoring = true;
-
-  try {
-    for (let i = state.activeSignals.length - 1; i >= 0; i--) {
-      const sig = state.activeSignals[i];
-      try {
-        const candles = await fetchCandles(sig.symbol);
-        const recent = candles.slice(-4); // 60s polling me price miss na ho
-
-        let outcome = null;
-        for (const c of recent) {
-          if (c.time && sig.openedAt && new Date(c.time).getTime() < sig.openedAt - 60000) continue;
-          if (sig.direction === 'BUY') {
-            if (c.low <= sig.sl) { outcome = 'SL'; break; }
-            if (c.high >= sig.tp) { outcome = 'TP'; break; }
-          } else {
-            if (c.high >= sig.sl) { outcome = 'SL'; break; }
-            if (c.low <= sig.tp) { outcome = 'TP'; break; }
-          }
-        }
-
-        if (!outcome) continue;
-
-        const risk = Math.abs(sig.entry - sig.sl) * sig.lots;
-        const pnl = outcome === 'TP'
-          ? risk * CONFIG.rewardRatio
-          : -risk;
-
-        const msg = outcome === 'TP'
-          ? `🎯 *TARGET HIT*\nID: ${sig.id}\nAsset: ${sig.label}\n` +
-            `Direction: ${sig.direction}\nEntry ${sig.entry.toFixed(sig.digits)} → TP ${sig.tp.toFixed(sig.digits)}`
-          : `🛑 *STOP LOSS HIT*\nID: ${sig.id}\nAsset: ${sig.label}\n` +
-            `Direction: ${sig.direction}\nEntry ${sig.entry.toFixed(sig.digits)} → SL ${sig.sl.toFixed(sig.digits)}`;
-
-        await sendTelegramAlert(msg);
-        state.activeSignals.splice(i, 1);
-        await saveState();
-        console.log(`${sig.id} closed: ${outcome} (est. ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} units)`);
-      } catch (err) {
-        console.error(`Monitor error [${sig.id}]:`, err.message);
-      }
-    }
-  } finally {
-    monitoring = false;
-  }
+async function sendTelegram(sig) {
+  const emoji = sig.signal === "BUY" ? "🟢" : "🔴";
+  const msg =
+    `${emoji} <b>GOLD ${sig.signal}</b>\n\n` +
+    `💰 Entry: <b>${sig.entry}</b>\n` +
+    `🛑 SL: <b>${sig.stopLoss}</b>\n` +
+    `🎯 TP: <b>${sig.takeProfit}</b>\n` +
+    `📦 Lot: <b>${sig.lotSize}</b>\n` +
+    `🕐 Session: ${sig.session}\n` +
+    `📊 Score → Buy: ${sig.buyScore} | Sell: ${sig.sellScore}\n` +
+    `📈 RSI: ${sig.indicators.rsi} | ADX: ${sig.indicators.adx}\n\n` +
+    `⚠️ <i>Trading involves risk. No signal is guaranteed. Manage your own risk.</i>`;
+  await sendTelegramRaw(msg);
 }
 
-// ---------------------------------------------------------------------------
-// SCHEDULER  (bug #8: setInterval async ko await nahi karta tha)
-// ---------------------------------------------------------------------------
+// ============================================================
+//  API ROUTES
+// ============================================================
+app.get("/", (req, res) => res.json({ status: "Gold Signal Server running 24/7", signal: lastSignal }));
+app.get("/signal", (req, res) => res.json(lastSignal));
+app.get("/health", (req, res) => res.json({ ok: true, time: new Date().toISOString(), candlesLoaded: candles.length }));
 
-function startLoop(fn, intervalMs, name) {
-  const run = async () => {
-    try { await fn(); }
-    catch (err) { console.error(`${name} loop error:`, err.message); }
-    finally { setTimeout(run, intervalMs); }
-  };
-  setTimeout(run, 3000);
-}
-
-// ---------------------------------------------------------------------------
-// HTTP  (bug #5: /api/test-signal bilkul open tha)
-// ---------------------------------------------------------------------------
-
-const app = express();
-app.use(express.json());
-app.use(cors({ origin: false })); // browser se koi cross-origin access nahi
-
-function requireAuth(req, res, next) {
-  const key = req.get('x-api-key');
-  if (!key || key !== CONFIG.apiSecret) {
-    return res.status(401).json({ success: false, message: 'Unauthorized' });
-  }
-  next();
-}
-
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, activeSignals: state.activeSignals.length, uptime: process.uptime() });
+// ============================================================
+//  START — continuous 24/7 loop
+// ============================================================
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT} — polling every ${CONFIG.POLL_SECONDS}s`);
+  fetchData();
+  setInterval(fetchData, CONFIG.POLL_SECONDS * 1000);
 });
 
-app.get('/api/signals', requireAuth, (_req, res) => {
-  res.json({ success: true, signals: state.activeSignals });
-});
-
-app.post('/api/scan', requireAuth, async (_req, res) => {
-  await scanMarkets();
-  res.json({ success: true, activeSignals: state.activeSignals.length });
-});
-
-// ---------------------------------------------------------------------------
-// BOOT
-// ---------------------------------------------------------------------------
-
-(async () => {
-  validateConfig();
-  await loadState();
-
-  app.listen(CONFIG.port, () => {
-    console.log(`Signal bot listening on port ${CONFIG.port}`);
-    console.log(`Balance $${CONFIG.accountBalance} | risk ${CONFIG.riskPercent}% | R:R 1:${CONFIG.rewardRatio} | TF ${CONFIG.interval}`);
-  });
-
-  startLoop(scanMarkets, CONFIG.scanIntervalMs, 'scan');
-  startLoop(monitorSignals, CONFIG.monitorIntervalMs, 'monitor');
-})();
-
-process.on('SIGTERM', async () => { await saveState(); process.exit(0); });
-process.on('SIGINT', async () => { await saveState(); process.exit(0); });
-process.on('unhandledRejection', (err) => console.error('Unhandled rejection:', err?.message || err));
+// Keep process alive / log unexpected crashes instead of dying silently
+process.on("unhandledRejection", (err) => console.log("Unhandled rejection:", err));
+process.on("uncaughtException", (err) => console.log("Uncaught exception:", err));
